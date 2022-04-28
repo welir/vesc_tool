@@ -40,7 +40,7 @@ Skypuff::Skypuff(VescInterface *v) : QObject(),
     setState(DISCONNECTED);
     clearStats();
 
-    aliveResponseTimes.setCapacity(aliveAvgN);
+    statsResponseTimes.setCapacity(aliveAvgN);
 }
 
 void Skypuff::logVescDialog(const QString & title, const QString & text)
@@ -153,7 +153,7 @@ void Skypuff::portConnectedChanged()
 void Skypuff::clearStats()
 {
     // Alive ping stats
-    aliveResponseTimes.clear();
+    statsResponseTimes.clear();
     sumResponceTime = 0;
     minResponceTime = INT_MAX;
     maxResponceTime = INT_MIN;
@@ -197,7 +197,7 @@ void Skypuff::timerEvent(QTimerEvent *event)
         vesc->disconnectPort();
     }
     else if(event->timerId() == this->aliveTimerId) {
-        sendAlive();
+        requestStats();
     }
     else
         qFatal("Skypuff::timerEvent(): unknown timer id %d", event->timerId());
@@ -217,12 +217,11 @@ void Skypuff::sendGetConf()
     getConfTimeoutTimerId = startTimer(commandTimeout, Qt::PreciseTimer);
 }
 
-void Skypuff::sendAlive()
+void Skypuff::requestStats()
 {
     VByteArray vb;
 
-    vb.vbAppendUint8((aliveStep % aliveStepsForTemps) ? SK_COMM_ALIVE_POWER_STATS : SK_COMM_ALIVE_TEMP_STATS);
-    vb.vbAppendUint16(aliveTimeout);
+    vb.vbAppendUint8((aliveStep % aliveStepsForTemps) ? SK_COMM_POWER_STATS : SK_COMM_TEMP_STATS);
     aliveStep++;
 
     vesc->commands()->sendCustomAppData(vb);
@@ -289,23 +288,14 @@ void Skypuff::customAppDataReceived(QByteArray data)
     skypuff_custom_app_data_command command = (skypuff_custom_app_data_command)vb.vbPopFrontUint8();
 
     switch(command) {
-    case SK_COMM_ALIVE_POWER_STATS:
-        processAlive(vb, false);
+    case SK_COMM_POWER_STATS:
+        processStats(vb, false);
         break;
-    case SK_COMM_ALIVE_TEMP_STATS:
-        processAlive(vb, true);
-        break;
-    case SK_COMM_FAULT:
-        processFault(vb);
-        break;
-    case SK_COMM_STATE:
-        processState(vb);
+    case SK_COMM_TEMP_STATS:
+        processStats(vb, true);
         break;
     case SK_COMM_PULLING_TOO_HIGH:
         processPullingTooHigh(vb);
-        break;
-    case SK_COMM_OUT_OF_LIMITS:
-        processOutOfLimits(vb);
         break;
     case SK_COMM_FORCE_IS_SET:
         processForceIsSet(vb);
@@ -336,7 +326,7 @@ void Skypuff::customAppDataReceived(QByteArray data)
         break;
     default:
         vesc->emitMessageDialog(tr("Unknown CUSTOM_APP_DATA command"),
-                                tr("Received commad: '%1'.").arg((int)command),
+                                tr("Received command: '%1'.").arg((int)command),
                                 true);
         vesc->disconnectPort();
         return;
@@ -344,15 +334,15 @@ void Skypuff::customAppDataReceived(QByteArray data)
 
 }
 
-void Skypuff::updateAliveResponseStats(const int millis)
+void Skypuff::updateStatsResponse(const int millis)
 {
     sumResponceTime += millis;
 
     // Get old value if buffer is full
-    if(aliveResponseTimes.count() == aliveAvgN)
-        sumResponceTime -= aliveResponseTimes.takeFirst();
+    if(statsResponseTimes.count() == aliveAvgN)
+        sumResponceTime -= statsResponseTimes.takeFirst();
 
-    aliveResponseTimes.append(millis);
+    statsResponseTimes.append(millis);
 
     emit avgResponseMillisChanged(getAvgResponseMillis());
 
@@ -517,86 +507,28 @@ void Skypuff::processSettingsApplied(VByteArray &vb)
     vesc->emitMessageDialog(tr("Settings are set"), tr("Have a nice puffs"), true);
 }
 
-void Skypuff::processOutOfLimits(VByteArray &vb)
+void Skypuff::processStats(VByteArray &vb, bool isTempsPacket)
 {
-    // Enough data?
-    const int pulling_too_high_packet_length = 1;
-    if(vb.length() < pulling_too_high_packet_length) {
-        vesc->emitMessageDialog(tr("Can't deserialize out of limits command packet"),
-                                tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(pulling_too_high_packet_length),
-                                true);
-        vesc->disconnectPort();
+    // alive could be set from UI, timer is not necessary but possible
+    if(aliveTimeoutTimerId) {
+        updateStatsResponse(aliveResponseDelay.elapsed());
+        killTimer(aliveTimeoutTimerId);
+        aliveTimeoutTimerId = 0;
+    }
+    else {
+        qWarning() << "stats received, but timeout timer is not set";
     }
 
-    QString msg = QString::fromUtf8(vb);
-
-    vesc->emitMessageDialog(tr("Configuration is out of limits"), msg, false);
-}
-
-void Skypuff::processState(VByteArray &vb)
-{
     // Enough data?
-    const int fault_packet_length = 1;
-    if(vb.length() < fault_packet_length) {
-        vesc->emitMessageDialog(tr("Can't deserialize state command packet"),
-                                tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(fault_packet_length),
+    const int stats_power_packet_length = 1 + 4 * 2  + 2 * 2;
+    if(vb.length() < stats_power_packet_length) {
+        vesc->emitMessageDialog(tr("Can't deserialize stats power command packet"),
+                                tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(stats_power_packet_length),
                                 true);
         vesc->disconnectPort();
     }
 
     setState((skypuff_state)vb.vbPopFrontUint8());
-
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with state command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-}
-
-void Skypuff::processFault(VByteArray &vb)
-{
-    // Enough data?
-    const int fault_packet_length = 1;
-    if(vb.length() < fault_packet_length) {
-        vesc->emitMessageDialog(tr("Can't deserialize fault command packet"),
-                                tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(fault_packet_length),
-                                true);
-        vesc->disconnectPort();
-    }
-
-    setFault((mc_fault_code)vb.vbPopFrontUint8());
-
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with fault command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-}
-
-void Skypuff::processAlive(VByteArray &vb, bool isTempsPacket)
-{
-    // alive could be set from UI, timer is not necessary but possible
-    if(aliveTimeoutTimerId) {
-        updateAliveResponseStats(aliveResponseDelay.elapsed());
-        killTimer(aliveTimeoutTimerId);
-        aliveTimeoutTimerId = 0;
-    }
-    else {
-        qWarning() << "alive stats received, but timeout timer is not set";
-    }
-
-    // Enough data?
-    const int alive_power_packet_length = 4 * 2  + 2 * 2;
-    if(vb.length() < alive_power_packet_length) {
-        vesc->emitMessageDialog(tr("Can't deserialize alive power command packet"),
-                                tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(alive_power_packet_length),
-                                true);
-        vesc->disconnectPort();
-    }
 
     int newTac = vb.vbPopFrontInt32();
     float newErpm = vb.vbPopFrontInt16() * 4;
@@ -607,39 +539,67 @@ void Skypuff::processAlive(VByteArray &vb, bool isTempsPacket)
     setSpeed(newErpm);
     setPower(newMotorAmps, newBatteryAmps);
 
-    if(!isTempsPacket && vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with alive power packet stats"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-    else if(!isTempsPacket)
-        return;
+    if(isTempsPacket) {
+        const int stats_temp_packet_length = 2 * 3;
+        if(vb.length() < stats_temp_packet_length) {
+            vesc->emitMessageDialog(tr("Can't deserialize alive temp command packet"),
+                                    tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(stats_temp_packet_length),
+                                    true);
+            vesc->disconnectPort();
+        }
 
-    const int alive_temp_packet_length = 2 * 3;
-    if(vb.length() < alive_temp_packet_length) {
-        vesc->emitMessageDialog(tr("Can't deserialize alive temp command packet"),
-                                tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(alive_temp_packet_length),
-                                true);
-        vesc->disconnectPort();
-    }
+        float newVBat = vb.vbPopFrontDouble16(1e1);
+        float newFetsTemp = vb.vbPopFrontDouble16(1e1);
+        float newMotorTemp = vb.vbPopFrontDouble16(1e1);
 
-    float newVBat = vb.vbPopFrontDouble16(1e1);
-    float newFetsTemp = vb.vbPopFrontDouble16(1e1);
-    float newMotorTemp = vb.vbPopFrontDouble16(1e1);
-
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with alive temp packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
+        setVBat(newVBat);
+        setTempFets(newFetsTemp);
+        setTempMotor(newMotorTemp);
     }
 
-    setVBat(newVBat);
-    setTempFets(newFetsTemp);
-    setTempMotor(newMotorTemp);
+    // alive message may contain extra data (error messages)
+    while(true) {
+        if(!vb.length()) {
+            break;
+        }
+
+        skypuff_custom_app_data_command extraCommand = (skypuff_custom_app_data_command)vb.vbPopFrontUint8();
+        switch(extraCommand) {
+            case SK_COMM_FAULT: {
+                // Enough data?
+                const int fault_packet_length = 1;
+                if(vb.length() < fault_packet_length) {
+                    vesc->emitMessageDialog(tr("Can't deserialize fault command packet"),
+                                            tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(fault_packet_length),
+                                            true);
+                    vesc->disconnectPort();
+                }
+                setFault((mc_fault_code)vb.vbPopFrontUint8());
+                break;
+            }
+            case SK_COMM_OUT_OF_LIMITS: {
+                // Enough data?
+                const int message_length = vb.vbPopFrontUint8();
+                if(vb.length() < message_length) {
+                    vesc->emitMessageDialog(tr("Can't deserialize out of limits command packet"),
+                                            tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(message_length),
+                                            true);
+                    vesc->disconnectPort();
+                }
+
+                QString msg = QString::fromUtf8(vb, message_length);
+                vb.remove(0, message_length);
+                vesc->emitMessageDialog(tr("Configuration is out of limits"), msg, false);
+                break;
+            }
+            default: {
+                vesc->emitMessageDialog(tr("Can't deserialize alive temp command packet"),
+                                        tr("Received message with unknown type %1!").arg(extraCommand),
+                                        true);
+                vesc->disconnectPort();
+            }
+        }
+    }
 }
 
 void Skypuff::processSettingsV1(VByteArray &vb)
