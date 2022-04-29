@@ -347,22 +347,22 @@ void Skypuff::processPullingTooHigh(VByteArray &vb)
     setStatus(tr("Pulling too high - %1Kg").arg((double)(current / cfg.amps_per_kg), 0, 'f', 2));
 }
 
-void Skypuff::processUnwindedToOpposite(VByteArray &vb)
+void Skypuff::processUnwindedToOpposite(VByteArray &/*vb*/)
 {
     setStatus(tr("Opposite braking zone"));
 }
 
-void Skypuff::processUnwindedFromSlowing(VByteArray &vb)
+void Skypuff::processUnwindedFromSlowing(VByteArray &/*vb*/)
 {
     setStatus(tr("Slowing zone passed"));
 }
 
-void Skypuff::processDetectingMotion(VByteArray &vb)
+void Skypuff::processDetectingMotion(VByteArray &/*vb*/)
 {
     setStatus(tr("Detecting motion..."));
 }
 
-void Skypuff::processTooSlowSpeedUp(VByteArray &vb)
+void Skypuff::processTooSlowSpeedUp(VByteArray &/*vb*/)
 {
     setStatus(tr("Too slow speed up"));
 }
@@ -386,13 +386,9 @@ void Skypuff::processForceIsSet(VByteArray &vb)
                 arg(pull_current / cfg.amps_per_kg, 0, 'f', 2).
                 arg(pull_current, 0, 'f', 1).
                 arg(amps_per_sec, 0, 'f', 1));
-
-    //setStatus(tr("%1Kg (%2A) is set").
-    //            arg(lastForceKg, 0, 'f', 2).
-    //            arg(pull_current, 0, 'f', 1));
 }
 
-void Skypuff::processZeroIsSet(VByteArray &vb)
+void Skypuff::processZeroIsSet(VByteArray &/*vb*/)
 {
     setStatus(tr("Zero is set"));
 }
@@ -413,7 +409,7 @@ void Skypuff::processMsg(VByteArray &vb)
     setStatus(msg);
 }
 
-void Skypuff::processSettingsApplied(VByteArray &vb)
+void Skypuff::processSettingsApplied(VByteArray &/*vb*/)
 {
     vesc->emitMessageDialog(tr("Settings are set"), tr("Have a nice puffs"), true);
 }
@@ -469,11 +465,7 @@ void Skypuff::processStats(VByteArray &vb, bool isTempsPacket)
     }
 
     // alive message may contain extra data (error messages)
-    while (true) {
-        if (!vb.length()) {
-            break;
-        }
-
+    while (vb.length()) {
         skypuff_custom_app_data_command extraCommand = (skypuff_custom_app_data_command)vb.vbPopFrontUint8();
         switch (extraCommand) {
             case SK_COMM_FAULT: {
@@ -540,7 +532,7 @@ void Skypuff::processStats(VByteArray &vb, bool isTempsPacket)
                 break;
             }
             default: {
-                vesc->emitMessageDialog(tr("Can't deserialize alive temp command packet"),
+                vesc->emitMessageDialog(tr("Can't deserialize additional stats messages"),
                                         tr("Received message with unknown type %1!").arg(extraCommand),
                                         true);
                 vesc->disconnectPort();
