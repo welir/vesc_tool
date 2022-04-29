@@ -542,6 +542,7 @@ Page {
                 bUnwinding.state = "BRAKING_EXTENSION"
                 bPrePull.state = "PRE_PULL"
                 break
+            case "SLOW":
             case "SLOWING":
                 bUnwinding.enabled = false
                 bPrePull.enabled = false

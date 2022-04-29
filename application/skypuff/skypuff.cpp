@@ -294,33 +294,6 @@ void Skypuff::customAppDataReceived(QByteArray data)
     case SK_COMM_TEMP_STATS:
         processStats(vb, true);
         break;
-    case SK_COMM_PULLING_TOO_HIGH:
-        processPullingTooHigh(vb);
-        break;
-    case SK_COMM_FORCE_IS_SET:
-        processForceIsSet(vb);
-        break;
-    case SK_COMM_UNWINDED_TO_OPPOSITE:
-        processUnwindedToOpposite(vb);
-        break;
-    case SK_COMM_UNWINDED_FROM_SLOWING:
-        processUnwindedFromSlowing(vb);
-        break;
-    case SK_COMM_SETTINGS_APPLIED:
-        processSettingsApplied(vb);
-        break;
-    case SK_COMM_DETECTING_MOTION:
-        processDetectingMotion(vb);
-        break;
-    case SK_COMM_TOO_SLOW_SPEED_UP:
-        processTooSlowSpeedUp(vb);
-        break;
-    case SK_COMM_ZERO_IS_SET:
-        processZeroIsSet(vb);
-        break;
-    case SK_COMM_MSG:
-        processMsg(vb);
-        break;
     case SK_COMM_SETTINGS_V1:
         processSettingsV1(vb);
         break;
@@ -370,66 +343,27 @@ void Skypuff::processPullingTooHigh(VByteArray &vb)
 
     float current = vb.vbPopFrontDouble16(1e1);
 
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with pulling too high command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
 
     setStatus(tr("Pulling too high - %1Kg").arg((double)(current / cfg.amps_per_kg), 0, 'f', 2));
 }
 
 void Skypuff::processUnwindedToOpposite(VByteArray &vb)
 {
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with unwinded to opposite command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-
     setStatus(tr("Opposite braking zone"));
 }
 
 void Skypuff::processUnwindedFromSlowing(VByteArray &vb)
 {
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with unwinded from slowing command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-
     setStatus(tr("Slowing zone passed"));
 }
 
 void Skypuff::processDetectingMotion(VByteArray &vb)
 {
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with detecting motion command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-
     setStatus(tr("Detecting motion..."));
 }
 
 void Skypuff::processTooSlowSpeedUp(VByteArray &vb)
 {
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with too slow speed up command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-
     setStatus(tr("Too slow speed up"));
 }
 
@@ -456,54 +390,31 @@ void Skypuff::processForceIsSet(VByteArray &vb)
     //setStatus(tr("%1Kg (%2A) is set").
     //            arg(lastForceKg, 0, 'f', 2).
     //            arg(pull_current, 0, 'f', 1));
-
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with force is set command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
 }
 
 void Skypuff::processZeroIsSet(VByteArray &vb)
 {
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with zero is set command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-
     setStatus(tr("Zero is set"));
 }
 
 void Skypuff::processMsg(VByteArray &vb)
 {
-    if(!vb.length()) {
-        vesc->emitMessageDialog(tr("No bytes with SK_COMM_MSG command packet"),
-                                tr("Received %1 bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
+	const int message_length = vb.vbPopFrontUint8();
+	if(vb.length() < message_length) {
+		vesc->emitMessageDialog(tr("Can't deserialize SK_COMM_MSG command packet"),
+								tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(message_length),
+								true);
+		vesc->disconnectPort();
+	}
 
-    QString msg(vb);
+	QString msg = QString::fromUtf8(vb, message_length);
+	vb.remove(0, message_length);
 
-    setStatus(vb);
+    setStatus(msg);
 }
 
 void Skypuff::processSettingsApplied(VByteArray &vb)
 {
-    if(vb.length()) {
-        vesc->emitMessageDialog(tr("Extra bytes received with unwinded to opposite command packet"),
-                                tr("Received %1 extra bytes!").arg(vb.length()),
-                                true);
-        vesc->disconnectPort();
-        return;
-    }
-
     vesc->emitMessageDialog(tr("Settings are set"), tr("Have a nice puffs"), true);
 }
 
@@ -539,7 +450,7 @@ void Skypuff::processStats(VByteArray &vb, bool isTempsPacket)
     setSpeed(newErpm);
     setPower(newMotorAmps, newBatteryAmps);
 
-    if(isTempsPacket) {
+    if (isTempsPacket) {
         const int stats_temp_packet_length = 2 * 3;
         if(vb.length() < stats_temp_packet_length) {
             vesc->emitMessageDialog(tr("Can't deserialize alive temp command packet"),
@@ -558,13 +469,13 @@ void Skypuff::processStats(VByteArray &vb, bool isTempsPacket)
     }
 
     // alive message may contain extra data (error messages)
-    while(true) {
-        if(!vb.length()) {
+    while (true) {
+        if (!vb.length()) {
             break;
         }
 
         skypuff_custom_app_data_command extraCommand = (skypuff_custom_app_data_command)vb.vbPopFrontUint8();
-        switch(extraCommand) {
+        switch (extraCommand) {
             case SK_COMM_FAULT: {
                 // Enough data?
                 const int fault_packet_length = 1;
@@ -590,6 +501,42 @@ void Skypuff::processStats(VByteArray &vb, bool isTempsPacket)
                 QString msg = QString::fromUtf8(vb, message_length);
                 vb.remove(0, message_length);
                 vesc->emitMessageDialog(tr("Configuration is out of limits"), msg, false);
+                break;
+            }
+            case SK_COMM_PULLING_TOO_HIGH: {
+                processPullingTooHigh(vb);
+                break;
+            }
+            case SK_COMM_FORCE_IS_SET: {
+                processForceIsSet(vb);
+                break;
+            }
+            case SK_COMM_UNWINDED_TO_OPPOSITE: {
+                processUnwindedToOpposite(vb);
+                break;
+            }
+            case SK_COMM_UNWINDED_FROM_SLOWING: {
+                processUnwindedFromSlowing(vb);
+                break;
+            }
+            case SK_COMM_SETTINGS_APPLIED: {
+                processSettingsApplied(vb);
+                break;
+            }
+            case SK_COMM_DETECTING_MOTION: {
+                processDetectingMotion(vb);
+                break;
+            }
+            case SK_COMM_TOO_SLOW_SPEED_UP: {
+                processTooSlowSpeedUp(vb);
+                break;
+            }
+            case SK_COMM_ZERO_IS_SET: {
+                processZeroIsSet(vb);
+                break;
+            }
+            case SK_COMM_MSG: {
+                processMsg(vb);
                 break;
             }
             default: {
