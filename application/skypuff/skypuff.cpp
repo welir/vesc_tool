@@ -554,7 +554,7 @@ void Skypuff::processSettingsV1(VByteArray &vb)
     }
 
     // Enough data?
-    const int v1_settings_length = 111;
+    const int v1_settings_length = 115;
     if(vb.length() < v1_settings_length) {
         vesc->emitMessageDialog(tr("Can't deserialize V1 settings"),
                                 tr("Received %1 bytes, expected %2 bytes!").arg(vb.length()).arg(v1_settings_length),
@@ -577,6 +577,8 @@ void Skypuff::processSettingsV1(VByteArray &vb)
     cfg.v_in_max = vb.vbPopFrontDouble32(1e2);
 
     cfg.deserializeV1(vb);
+	vb.vbPopFrontDouble16(1e1); // l_temp_fet_end
+	vb.vbPopFrontDouble16(1e1); // l_temp_motor_end
 
     setState(mcu_state);
 
