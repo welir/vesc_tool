@@ -112,6 +112,8 @@ typedef enum {
     DISP_POS_MODE_ENCODER_OBSERVER_ERROR
 } disp_pos_mode;
 
+Q_DECLARE_METATYPE(disp_pos_mode)
+
 // ADC control types. Remember to add new types here when adding them to the firmware.
 typedef enum {
     ADC_CTRL_TYPE_NONE = 0,
@@ -566,6 +568,7 @@ struct FW_RX_PARAMS {
 
     Q_PROPERTY(int major MEMBER major)
     Q_PROPERTY(int minor MEMBER minor)
+    Q_PROPERTY(QString fwName MEMBER fwName)
     Q_PROPERTY(QString hw MEMBER hw)
     Q_PROPERTY(QByteArray uuid MEMBER uuid)
     Q_PROPERTY(bool isPaired MEMBER isPaired)
@@ -617,6 +620,7 @@ public:
 
     int major;
     int minor;
+    QString fwName;
     QString hw;
     QByteArray uuid;
     bool isPaired;

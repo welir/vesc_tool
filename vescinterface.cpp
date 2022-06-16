@@ -257,8 +257,11 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
         }
         mSettings.endArray();
     }
+    
+    QLocale systemLocale;
+    bool useImperialByDefault = systemLocale.measurementSystem() == QLocale::ImperialSystem;
 
-    mUseImperialUnits = mSettings.value("useImperialUnits", false).toBool();
+    mUseImperialUnits = mSettings.value("useImperialUnits", useImperialByDefault).toBool();
     mKeepScreenOn = mSettings.value("keepScreenOn", true).toBool();
     mUseWakeLock = mSettings.value("useWakeLock", false).toBool();
     mLoadQmlUiOnConnect = mSettings.value("loadQmlUiOnConnect", true).toBool();
@@ -2270,12 +2273,6 @@ bool VescInterface::connectSerial(QString port, int baudrate)
         mSerialPort->setParity(QSerialPort::NoParity);
         mSerialPort->setStopBits(QSerialPort::OneStop);
         mSerialPort->setFlowControl(QSerialPort::NoFlowControl);
-
-        // For nrf
-        mSerialPort->setRequestToSend(true);
-        mSerialPort->setDataTerminalReady(true);
-        QThread::msleep(5);
-        mSerialPort->setDataTerminalReady(false);
     }
 
     mLastSerialPort = port;

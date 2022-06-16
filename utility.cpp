@@ -257,7 +257,7 @@ QString Utility::uuid2Str(QByteArray uuid, bool space)
 {
     QString strUuid;
     for (int i = 0;i < uuid.size();i++) {
-        QString str = QString::number(uuid.at(i), 16).
+        QString str = QString::number((uint8_t)uuid.at(i), 16).
                 rightJustified(2, '0').toUpper();
         strUuid.append(((i > 0 && space) ? " " : "") + str);
     }
@@ -627,8 +627,17 @@ bool Utility::resetInputCan(VescInterface *vesc, QVector<int> canIds)
 
     if (res) {
         int canId = ap->getParamInt("controller_id");
-        int canStatus = ap->getParamInt("can_status_msgs_r1");
-        int canStatus2 = ap->getParamInt("can_status_msgs_r2");
+
+        int canStatus;
+        int canStatus2;
+        bool has_bitfield_params = ap->hasParam("can_status_msgs_r1");
+        if (has_bitfield_params) {
+            canStatus = ap->getParamInt("can_status_msgs_r1");
+            canStatus2 = ap->getParamInt("can_status_msgs_r2");
+        } else {
+            canStatus = ap->getParamEnum("send_can_status");
+        }
+
         vesc->commands()->getAppConfDefault();
         res = waitSignal(ap, SIGNAL(updated()), 4000);
 
@@ -638,8 +647,13 @@ bool Utility::resetInputCan(VescInterface *vesc, QVector<int> canIds)
 
         if (res) {
             ap->updateParamInt("controller_id", canId);
-            ap->updateParamInt("can_status_msgs_r1", canStatus);
-            ap->updateParamInt("can_status_msgs_r2", canStatus2);
+            if (has_bitfield_params) {
+                ap->updateParamInt("can_status_msgs_r1", canStatus);
+                ap->updateParamInt("can_status_msgs_r2", canStatus2);
+            } else {
+                ap->updateParamEnum("send_can_status", canStatus);
+            }
+
             vesc->commands()->setAppConf();
             res = waitSignal(vesc->commands(), SIGNAL(ackReceived(QString)), 4000);
 
@@ -681,8 +695,17 @@ bool Utility::resetInputCan(VescInterface *vesc, QVector<int> canIds)
             }
 
             int canId = ap->getParamInt("controller_id");
-            int canStatus = ap->getParamInt("can_status_msgs_r1");
-            int canStatus2 = ap->getParamInt("can_status_msgs_r2");
+
+            int canStatus;
+            int canStatus2;
+            bool has_bitfield_params = ap->hasParam("can_status_msgs_r1");
+            if (has_bitfield_params) {
+                canStatus = ap->getParamInt("can_status_msgs_r1");
+                canStatus2 = ap->getParamInt("can_status_msgs_r2");
+            } else {
+                canStatus = ap->getParamEnum("send_can_status");
+            }
+
             vesc->commands()->getAppConfDefault();
             res = waitSignal(ap, SIGNAL(updated()), 4000);
 
@@ -692,8 +715,14 @@ bool Utility::resetInputCan(VescInterface *vesc, QVector<int> canIds)
             }
 
             ap->updateParamInt("controller_id", canId);
-            ap->updateParamInt("can_status_msgs_r1", canStatus);
-            ap->updateParamInt("can_status_msgs_r2", canStatus2);
+
+            if (has_bitfield_params) {
+                ap->updateParamInt("can_status_msgs_r1", canStatus);
+                ap->updateParamInt("can_status_msgs_r2", canStatus2);
+            } else {
+                ap->updateParamEnum("send_can_status", canStatus);
+            }
+
             vesc->commands()->setAppConf();
             res = waitSignal(vesc->commands(), SIGNAL(ackReceived(QString)), 4000);
 
