@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<manifest package="skypuff.winch" xmlns:android="http://schemas.android.com/apk/res/android" android:versionName="0.95" android:versionCode="26" android:installLocation="auto">
+<manifest package="skypuff.winch" xmlns:android="http://schemas.android.com/apk/res/android" android:versionName="4.00" android:versionCode="110" android:installLocation="auto">
     <application android:hardwareAccelerated="true" android:name="org.qtproject.qt5.android.bindings.QtApplication" android:label="SkyPuff" android:icon="@drawable/icon">
         <activity android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation" android:name="org.qtproject.qt5.android.bindings.QtActivity" android:label="SkyPuff" android:screenOrientation="unspecified" android:launchMode="singleTop">
             <intent-filter>
