@@ -68,6 +68,8 @@
 #include "pages/pagescripting.h"
 #include "pages/pagemotorcomparison.h"
 #include "pages/pagelisp.h"
+#include "pages/pageespprog.h"
+#include "pages/pagevescpackage.h"
 
 namespace Ui {
 class MainWindow;
@@ -167,11 +169,15 @@ private:
     bool mMcConfRead;
     bool mAppConfRead;
     QMap<QString, int> mPageNameIdList;
+    QString mLastParamParserCPath;
+    QString mLastMCConfigXMLPath;
+    QString mLastAppConfigXMLPath;
 
     QTimer mPollRtTimer;
     QTimer mPollAppTimer;
     QTimer mPollImuTimer;
     QTimer mPollBmsTimer;
+    QTimer mPortTimer;
 
     PageWelcome *mPageWelcome;
     PageConnection *mPageConnection;
@@ -180,6 +186,7 @@ private:
     PageSampledData *mPageSampledData;
     PageImu *mPageImu;
     PageFirmware *mPageFirmware;
+    PageVescPackage *mPagePackage;
     PageDebugPrint *mPageDebugPrint;
     PageMotorSettings *mPageMotorSettings;
     PageMotor *mPageMotor;
@@ -211,6 +218,7 @@ private:
     PageCustomConfig *mPageCustomConfig2;
     PageScripting *mPageScripting;
     PageLisp *mPageLisp;
+    PageEspProg *mPageEspProg;
     QTabWidget *mPageVESCDev;
     Preferences *mPreferences;
 

@@ -275,8 +275,6 @@ Item {
                                 if (Utility.requestFilePermission()) {
                                     fileDialog.close()
                                     fileDialog.open()
-                                    //filePicker.enabled = true
-                                    //filePicker.visible = true
                                 } else {
                                     VescIf.emitMessageDialog(
                                                 "File Permissions",
@@ -293,38 +291,19 @@ Item {
                         }
                     }
 
-                    FilePicker {
-                        id: filePicker
-                        anchors.fill: parent
-                        showDotAndDotDot: true
-                        nameFilters: "*.bin"
-                        visible: false
-                        enabled: false
-
-                        onFileSelected: {
-                            customFwText.text = currentFolder() + "/" + fileName
-                            visible = false
-                            enabled = false
-                        }
-                    }
                     Dl.FileDialog {
                         id: fileDialog
-                        title: "Please choose a file"
-                        nameFilters: ["Firmware File (*.bin)"]
-                        selectedNameFilter : "Firmware File (*.bin)"
+                        title: "Choose a firmware file"
+                        nameFilters: ["*"]
+                        selectedNameFilter: "*"
                         onAccepted: {
-                            var substring = ".bin";
-                            if(fileDialog.fileUrl.toString().indexOf(substring) !== -1) {
-                                customFwText.text = fileDialog.fileUrl
-                        } else {
-
-                        }
-                            console.log("You chose: " + fileDialog.fileUrls)
-                            fileDialog.close()
+                            customFwText.text = fileUrl
+                            close()
+                            parent.forceActiveFocus()
                         }
                         onRejected: {
-                            console.log("Canceled")
-                            fileDialog.close()
+                            close()
+                            parent.forceActiveFocus()
                         }
                     }
                 }
@@ -506,7 +485,7 @@ Item {
                     okUploadFw = fwHelper.uploadFirmwareSingleShotTimer(fwItems.get(fwBox.currentIndex).value, VescIf, false, false, fwdCan, "")
                 }
             } else if (swipeView.currentIndex == 1) {
-                okUploadFw = fwHelper.uploadFirmwareSingleShotTimer(customFwText.text, VescIf, false, true, fwdCan,"")
+                okUploadFw = fwHelper.uploadFirmwareSingleShotTimer(customFwText.text, VescIf, false, Qt.platform.os != "android", fwdCan,"")
             } else if (swipeView.currentIndex == 2) {
                 fwHelper.uploadFirmwareSingleShotTimer(blItems.get(blBox.currentIndex).value, VescIf, true, false, fwdCan,"")
             }
@@ -517,6 +496,7 @@ Item {
         var hws = fwHelper.getHardwares(params, params.hw)
 
         hwItems.clear()
+        fwItems.clear()
 
         for (var name in hws) {
             if (name.indexOf("412") !== -1) {
@@ -549,20 +529,20 @@ Item {
         if (!VescIf.isPortConnected()) {
             VescIf.emitMessageDialog(
                         "Connection Error",
-                        "The VESC is not connected. Please open a connection.",
+                        "Not connected to device. Please connect first.",
                         false)
             return
         }
 
-        var msg = "You are about to upload new firmware to the connected VESC"
-        var msgBl = "You are about to upload a bootloader to the connected VESC"
+        var msg = "You are about to upload new firmware to the connected device"
+        var msgBl = "You are about to upload a bootloader to the connected device"
 
         var msgEnd = "."
         if (fwdCan) {
-            msgEnd = ", as well as all VESCs found on the CAN-bus. \n\n" +
+            msgEnd = ", as well as all decices found on the CAN-bus. \n\n" +
                     "WARNING: The upload all function should ONLY be used if all " +
-                    "VESCs on the CAN-bus have the same hardware version. If that " +
-                    "is not the case, you must upload firmware to the VESCs individually."
+                    "decices on the CAN-bus have the same hardware version. If that " +
+                    "is not the case, you must upload firmware to the decices individually."
         }
 
         msg += msgEnd
@@ -587,13 +567,13 @@ Item {
 
                 if (VescIf.getFwSupportsConfiguration()) {
                     msg += "\n\n" +
-                            "Uploading new firmware will clear all settings on your VESC. You can make " +
+                            "Uploading new firmware will clear all settings on . You can make " +
                             "a backup of the settings from the connection page and restore them after the " +
                             "update if you'd like (if you haven't done the backup already). " +
                             "Do you want to continue with the update, or cancel and do the backup first?"
                 } else {
                     msg += "\n\n" +
-                            "Uploading new firmware will clear all settings on your VESC " +
+                            "Uploading new firmware will clear all settings on your device " +
                             "and you have to do the configuration again. Do you want to " +
                             "continue?"
                 }
@@ -605,7 +585,7 @@ Item {
                 uploadDialogLabel.text =
                         msg + "\n\n" +
                         "Uploading firmware for the wrong hardware version " +
-                        "WILL damage the VESC for sure. Are you sure that you have " +
+                        "WILL damage the hardware. Are you sure that you have " +
                         "chosen the correct hardware version?"
                 uploadDialog.open()
             }
@@ -615,7 +595,7 @@ Item {
                 uploadDialogLabel.text =
                         msg + "\n\n" +
                         "Uploading firmware for the wrong hardware version " +
-                        "WILL damage the VESC for sure. Are you sure that you have " +
+                        "WILL damage the hardware. Are you sure that you have " +
                         "chosen the correct hardware version?"
                 uploadDialog.open()
             } else {
@@ -638,7 +618,7 @@ Item {
 
             var msgBl2 = ""
             if (!mCommands.getLimitedSupportsEraseBootloader()) {
-                msgBl2 = "If the VESC already has a bootloader this will destroy " +
+                msgBl2 = "If the device already has a bootloader this will destroy " +
                         "the bootloader and firmware updates cannot be done anymore. "
             }
 
@@ -670,7 +650,7 @@ Item {
     Connections {
         target: VescIf
 
-        onFwUploadStatus: {
+        function onFwUploadStatus(status, progress, isOngoing) {
             if (isOngoing) {
                 uploadText.text = status + " (" + parseFloat(progress * 100.0).toFixed(2) + " %)"
             } else {
@@ -682,22 +662,23 @@ Item {
             cancelButton.enabled = isOngoing
         }
     }
+
     Connections {
         target: fwHelper
 
-        onFwUploadRes: {
+        function onFwUploadRes(res, isBootloader) {
             if (res) {
                 if(isBootloader) {
-                        VescIf.emitMessageDialog("Bootloader Finished",
-                                                 "Bootloader upload is done.",
-                                                 true, false)
+                    VescIf.emitMessageDialog("Bootloader Finished",
+                                             "Bootloader upload is done.",
+                                             true, false)
                 } else {
-                        VescIf.disconnectPort()
-                        VescIf.emitMessageDialog("Warning",
-                                                 "The firmware upload is done. You must wait at least " +
-                                                 "10 seconds before unplugging power. Otherwise the firmware will get corrupted and your " +
-                                                 "VESC will become bricked. If that happens you need a SWD programmer to recover it.",
-                                                 true, false)
+                    VescIf.disconnectPort()
+                    VescIf.emitMessageDialog("Warning",
+                                             "The firmware upload is done. The device should reboot automatically within 10 seconds. Do " +
+                                             "NOT remove power before the reboot is done as that can brick the CPU and requires a programmer " +
+                                             "to fix.",
+                                             true, false)
                 }
             }
         }
@@ -706,7 +687,7 @@ Item {
     Connections {
         target: VescIf
 
-        onFwRxChanged: {
+        function onFwRxChanged(rx, limited) {
             if (!rx) {
                 return;
             }

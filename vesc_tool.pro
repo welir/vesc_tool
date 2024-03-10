@@ -5,16 +5,16 @@
 #-------------------------------------------------
 
 # Version
-VT_VERSION = 4.00
+VT_VERSION = 6.00
 VT_INTRO_VERSION = 1
 VT_CONFIG_VERSION = 2
-
+11
 # Set to 0 for stable versions and to test version number for development versions.
-VT_IS_TEST_VERSION = 6
+VT_IS_TEST_VERSION = 0
 
-VT_ANDROID_VERSION_ARMV7 = 108
-VT_ANDROID_VERSION_ARM64 = 109
-VT_ANDROID_VERSION_X86 = 110
+VT_ANDROID_VERSION_ARMV7 = 120
+VT_ANDROID_VERSION_ARM64 = 121
+VT_ANDROID_VERSION_X86 = 122
 
 VT_ANDROID_VERSION = $$VT_ANDROID_VERSION_X86
 
@@ -57,9 +57,7 @@ ios: {
 # sudo service bluetooth restart
 
 # Bluetooth available
-!win32: {
-    DEFINES += HAS_BLUETOOTH
-}
+DEFINES += HAS_BLUETOOTH
 
 # CAN bus available
 # Adding serialbus to Qt seems to break the serial port on static builds. TODO: Figure out why.
@@ -79,6 +77,13 @@ DEFINES += HAS_POS
 
 win32: {
     DEFINES += _USE_MATH_DEFINES
+}
+
+# https://stackoverflow.com/questions/61444320/what-are-the-configure-options-for-qt-that-enable-dead-keys-usage
+unix: {
+!ios: {
+    QTPLUGIN += composeplatforminputcontextplugin
+}
 }
 
 # Options
@@ -194,9 +199,13 @@ build_mobile {
 }
 
 SOURCES += main.cpp\
+    bleuartdummy.cpp \
+    codeloader.cpp \
     mainwindow.cpp \
+    boardsetupwindow.cpp \
     packet.cpp \
     preferences.cpp \
+    tcphub.cpp \
     udpserversimple.cpp \
     vbytearray.cpp \
     commands.cpp \
@@ -213,8 +222,12 @@ SOURCES += main.cpp\
     hexfile.cpp
 
 HEADERS  += mainwindow.h \
+    bleuartdummy.h \
+    codeloader.h \
+    boardsetupwindow.h \
     packet.h \
     preferences.h \
+    tcphub.h \
     udpserversimple.h \
     vbytearray.h \
     commands.h \
@@ -232,6 +245,7 @@ HEADERS  += mainwindow.h \
     hexfile.h
 
 FORMS    += mainwindow.ui \
+    boardsetupwindow.ui \
     parametereditor.ui \
     preferences.ui
 
@@ -247,12 +261,14 @@ include(map/map.pri)
 include(lzokay/lzokay.pri)
 include(heatshrink/heatshrink.pri)
 include(QCodeEditor/qcodeeditor.pri)
+include(esp32/esp32.pri)
 
 RESOURCES += res.qrc \
     res_fw_bms.qrc \
     res/firmwares/res_fw.qrc \
     res_lisp.qrc \
-    res_qml.qrc
+    res_qml.qrc \
+    res/firmwares_esp/res_fw_esp.qrc
 RESOURCES += res_config.qrc
 
 build_original {
@@ -298,7 +314,7 @@ macx-clang:contains(QMAKE_HOST.arch, arm.*): {
 macx {
     ICON        =  macos/appIcon.icns
     QMAKE_INFO_PLIST = macos/Info.plist
-    DISTFILES += macos/Info.plist    
+    DISTFILES += macos/Info.plist
     QMAKE_CFLAGS_RELEASE = $$QMAKE_CFLAGS_RELEASE_WITH_DEBUGINFO
     QMAKE_CXXFLAGS_RELEASE = $$QMAKE_CXXFLAGS_RELEASE_WITH_DEBUGINFO
     QMAKE_OBJECTIVE_CFLAGS_RELEASE = $$QMAKE_OBJECTIVE_CFLAGS_RELEASE_WITH_DEBUGINFO
@@ -333,3 +349,8 @@ ios {
     QMAKE_APPLE_TARGETED_DEVICE_FAMILY = 1,2
 }
 CONFIG -= warn_on
+
+contains(ANDROID_TARGET_ARCH,) {
+    ANDROID_ABIS = \
+        armeabi-v7a
+}

@@ -98,10 +98,15 @@ ParameterEditor::ParameterEditor(QWidget *parent) :
         (void)row;
         updateGroupParamList();
     });
+
+    QSettings set;
+    mLastXmlPath = (set.value("parametereditor/lastxmlpath", ".").toString());
 }
 
 ParameterEditor::~ParameterEditor()
 {
+    QSettings set;
+    set.setValue("parametereditor/lastxmlpath", mLastXmlPath);
     delete ui;
 }
 
@@ -253,7 +258,7 @@ void ParameterEditor::on_paramSaveButton_clicked()
         ui->previewTable->removeRow(0);
     }
 
-    if (p.type != CFG_T_QSTRING && p.type != CFG_T_UNDEFINED) {
+    if (p.type != CFG_T_UNDEFINED) {
         ui->previewTable->addParamRow(&mParams, name);
     }
 }
@@ -397,7 +402,7 @@ void ParameterEditor::on_actionLoad_XML_triggered()
     QString path;
     path = QFileDialog::getOpenFileName(this,
                                         tr("Choose parameter file to load"),
-                                        ".",
+                                        mLastXmlPath,
                                         tr("Xml files (*.xml)"));
 
     if (path.isNull()) {
@@ -413,6 +418,7 @@ void ParameterEditor::on_actionLoad_XML_triggered()
                                     "%1").arg(mParams.xmlStatus()));
     } else {
         showStatusInfo(tr("Configuration Loaded"), true);
+        mLastXmlPath = path;
     }
 
     updateUi();
@@ -423,14 +429,14 @@ void ParameterEditor::on_actionSave_XML_as_triggered()
     QString path;
     path = QFileDialog::getSaveFileName(this,
                                         tr("Choose where to save the parameter XML file"),
-                                        ".",
+                                        mLastXmlPath,
                                         tr("Xml files (*.xml)"));
 
     if (path.isNull()) {
         return;
     }
 
-    if (!path.toLower().endsWith(".xml")) {
+    if (!path.endsWith(".xml", Qt::CaseInsensitive)) {
         path += ".xml";
     }
 
@@ -443,6 +449,7 @@ void ParameterEditor::on_actionSave_XML_as_triggered()
                                     "%1").arg(mParams.xmlStatus()));
     } else {
         showStatusInfo(tr("Configuration Saved"), true);
+        mLastXmlPath = path;
     }
 }
 
@@ -522,6 +529,7 @@ void ParameterEditor::setEditorValues(QString name, ConfigParam p)
 
     // String
     ui->stringValEdit->setText(p.valString);
+    ui->stringMaxLenBox->setValue(p.maxLen);
 
     // Enum
     ui->enumList->clear();
@@ -583,6 +591,7 @@ QString ParameterEditor::getEditorValues(ConfigParam *p)
 
         case CFG_T_QSTRING:
             p->valString = ui->stringValEdit->text();
+            p->maxLen = ui->stringMaxLenBox->value();
             break;
 
         case CFG_T_ENUM:
@@ -705,7 +714,7 @@ void ParameterEditor::saveParamFileDialog(bool wrapIfdef)
         return;
     }
 
-    if (!path.toLower().endsWith(".h")) {
+    if (!path.endsWith(".h", Qt::CaseInsensitive)) {
         path += ".h";
     }
 
@@ -736,8 +745,54 @@ void ParameterEditor::on_doubleTxTypeBox_currentIndexChanged(int index)
 
 void ParameterEditor::on_actionCalculatePacketSize_triggered()
 {
+    QMap<QString, QString> oldStrings;
+
+    bool updatesEnabledLast = mParams.getUpdatesEnabled();
+    mParams.setUpdatesEnabled(true);
+
+    // Fill all strings to get maximum possible size
+    for (auto name: mParams.getSerializeOrder()) {
+        auto p = mParams.getParam(name);
+
+        if (p == nullptr) {
+            qWarning() << "Parameter" << name << "not found.";
+            continue;
+        }
+
+        if (p->type == CFG_T_QSTRING) {
+            oldStrings[name] = mParams.getParamQString(name);
+
+            QString updStr = "";
+
+            if (p->maxLen > 0) {
+                updStr = updStr.leftJustified(p->maxLen, 'x');
+            } else {
+                updStr = updStr.leftJustified(512, 'x');
+            }
+
+            mParams.updateParamString(name, updStr);
+        }
+    }
+
     VByteArray bytes;
     mParams.serialize(bytes);
+
+    // Restore
+    for (auto name: mParams.getSerializeOrder()) {
+        auto p = mParams.getParam(name);
+
+        if (p == nullptr) {
+            qWarning() << "Parameter" << name << "not found.";
+            continue;
+        }
+
+        if (p->type == CFG_T_QSTRING) {
+            mParams.updateParamString(name, oldStrings[name]);
+        }
+    }
+
+    mParams.setUpdatesEnabled(updatesEnabledLast);
+
     QMessageBox::information(this,
                              tr("Packet Size"),
                              tr("%1 Bytes").arg(bytes.size()));
@@ -1053,8 +1108,8 @@ void ParameterEditor::on_actionSave_XML_and_export_config_parser_and_compressed_
     path = QFileDialog::getSaveFileName(this,
                                         tr("Choose the XML file or one of the C files. All files will be created with default "
                                            "names and/or overwritten if they already exist in the directory."),
-                                        ".",
-                                        tr("C Source/Header files (*.c *.h)"));
+                                        mLastXmlPath,
+                                        tr("C Source/Header files (*.c *.h *.xml)"));
 
     if (path.isNull()) {
         return;
@@ -1080,11 +1135,6 @@ void ParameterEditor::on_actionSave_XML_and_export_config_parser_and_compressed_
     QString pathDefines = path + "conf_default.h";
     QString pathParser = path + "confparser.c";
     QString pathCompressed = path + "confxml.c";
-
-    qDebug() << pathXml;
-    qDebug() << pathDefines;
-    qDebug() << pathParser;
-    qDebug() << pathCompressed;
 
     Utility::createCompressedConfigC(&mParams, nameConfig, pathCompressed);
     Utility::createParamParserC(&mParams, nameConfig, pathParser);

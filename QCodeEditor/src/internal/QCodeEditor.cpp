@@ -42,7 +42,8 @@ QCodeEditor::QCodeEditor(QWidget* widget) :
     m_tabReplace(QString(4, ' ')),
     m_commentStr("//"),
     m_indentStartStr("{"),
-    m_indentEndStr("}")
+    m_indentEndStr("}"),
+    m_separateMinus(true)
 {
 
     initFont();
@@ -455,16 +456,23 @@ void QCodeEditor::proceedCompleterEnd(QKeyEvent *e)
 
     auto isShortcut = ((e->modifiers() & Qt::ControlModifier) && e->key() == Qt::Key_Space);
     auto isDot = charUnderCursor(-1) == ".";
+    auto isMinus = charUnderCursor(-1) == "-";
     auto isSpace = charUnderCursor(-1) == " " || charUnderCursor(-1) == "\t";
 
-    if (isSpace || (word.isEmpty() && !isDot)) {
+    if (isSpace || (word.isEmpty() && !isDot && !(!m_separateMinus && isMinus))) {
         m_completer->popup()->hide();
         return;
     }
 
     QString completionPrefix = getCompletionWordNow(0, 0);
 
-    static QString eow(R"(~!@#$%^&*()_+{}|:"<>?,/;'[]\-=)");
+    QString eow;
+    if (m_separateMinus) {
+        eow = R"(~!@#$%^&*()-+{}|:"<>?,/;'[]\=)";
+    } else {
+        eow = R"(~!@#$%^&*()+{}|:"<>?,/;'[]\=)";
+    }
+
     if (!isShortcut &&
             (isComment ||
              e->text().isEmpty() ||
@@ -622,18 +630,27 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
                     }
                 }
 
+                int indentLine = 0;
                 for (auto c: line) {
-                    if (c == m_indentEndStr) {
-                        indentNow--;
-                    }
-
-                    if (indentNow < 0) {
-                        indentNow = 0;
+                    if (c == m_indentStartStr) {
+                        indentNow++;
+                        indentLine++;
                     }
                 }
 
+                for (auto c: line) {
+                    if (c == m_indentEndStr) {
+                        indentNow--;
+                        indentLine--;
+                    }
+                }
+
+                if (indentLine < 0) {
+                    indentLine = 0;
+                }
+
                 if (indent) {
-                    for (int i = 0;i < indentNow;i++) {
+                    for (int i = 0;i < (indentNow - indentLine);i++) {
                         line.prepend(m_tabReplace);
                     }
                 }
@@ -651,12 +668,6 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
                             break;
                         }
                         tc.setPosition(posStart++);
-                    }
-                }
-
-                for (auto c: line) {
-                    if (c == m_indentStartStr) {
-                        indentNow++;
                     }
                 }
             }
@@ -985,7 +996,7 @@ int QCodeEditor::getIndentationSpaces()
 
 QString QCodeEditor::getCompletionWordNow(int *linePosStart, int *linePosEnd)
 {
-    QString lineStartChars = " \t[{\"!";
+    QString lineStartChars = " \t[{\"!'";
     QString lineEndChars = " \t)]}\"!";
     auto posStart = textCursor().positionInBlock() - 1;
     auto posEnd = posStart;
@@ -1022,6 +1033,16 @@ QString QCodeEditor::getCompletionWordNow(int *linePosStart, int *linePosEnd)
     }
 
     return res;
+}
+
+bool QCodeEditor::getSeparateMinus() const
+{
+    return m_separateMinus;
+}
+
+void QCodeEditor::setSeparateMinus(bool separateMinus)
+{
+    m_separateMinus = separateMinus;
 }
 
 void QCodeEditor::setIndentStrs(const QString &start, const QString &end)

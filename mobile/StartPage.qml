@@ -98,9 +98,9 @@ Item {
 
                     ImageButton {
                         id: nrfPairButton
-
+                        visible: !nrfPair.visible
                         Layout.fillWidth: true
-                         Layout.fillHeight: true
+                        Layout.fillHeight: true
                         Layout.preferredWidth: 500
                         Layout.preferredHeight: 80
 
@@ -159,6 +159,26 @@ Item {
                                 enabled = false
                                 wizardInput.openDialog()
                                 enabled = true
+                            }
+                        }
+                    }
+
+                    ImageButton {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: 500
+                        Layout.preferredHeight: 80
+
+                        buttonText: "Setup\nIMU"
+                        imageSrc: "qrc" + Utility.getThemePath() + "icons/imu_off.png"
+
+                        onClicked: {
+                            if (!VescIf.isPortConnected()) {
+                                VescIf.emitMessageDialog("IMU Setup Wizard",
+                                                         "You are not connected to the VESC. Please connect in order " +
+                                                         "to run this wizard.", false, false)
+                            } else {
+                                wizardIMU.openDialog()
                             }
                         }
                     }
@@ -306,10 +326,19 @@ Item {
 
             GroupBox {
                 title: qsTr("Wireless Bridge to Computer (TCP)")
-                Layout.bottomMargin: isHorizontal ? 0 : 10
                 Layout.fillWidth: true
 
                 TcpBox {
+                    anchors.fill: parent
+                }
+            }
+
+            GroupBox {
+                title: qsTr("TCP Hub (Internet Bridge)")
+                Layout.bottomMargin: isHorizontal ? 0 : 10
+                Layout.fillWidth: true
+
+                TcpHubBox {
                     anchors.fill: parent
                 }
             }
@@ -332,19 +361,13 @@ Item {
         id: bleSetupDialog
     }
 
-    Connections {
-        target: mCommands
-
-        onNrfPairingRes: {
-            if (res != 0) {
-                nrfPairButton.visible = true
-            }
-        }
+    SetupWizardIMU {
+        id: wizardIMU
     }
 
     Connections {
         target: VescIf
-        onPortConnectedChanged: {
+        function onPortConnectedChanged() {
             if (VescIf.isPortConnected()) {
                 connectButton.buttonText = "Disconnect"
                 connectButton.imageSrc = "qrc" + Utility.getThemePath() + "icons/Disconnected-96.png"
@@ -408,7 +431,6 @@ Item {
 
         onAccepted: {
             nrfPair.visible = true
-            nrfPairButton.visible = false
             nrfPair.startPairing()
         }
     }

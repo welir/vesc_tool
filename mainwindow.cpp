@@ -33,7 +33,6 @@
 #include "widgets/helpdialog.h"
 #include "utility.h"
 #include "widgets/paramdialog.h"
-#include "widgets/detectallfocdialog.h"
 
 namespace {
 void stepTowards(double &value, double goal, double step) {
@@ -420,6 +419,7 @@ MainWindow::MainWindow(QWidget *parent) :
         mPageAppPas->reloadParams();
         mPageAppImu->reloadParams();
         mPageFirmware->reloadParams();
+        mPagePackage->reloadParams();
         mPageCanAnalyzer->reloadParams();
         mPageScripting->reloadParams();
         mPageLisp->reloadParams();
@@ -483,9 +483,9 @@ MainWindow::MainWindow(QWidget *parent) :
 
     connect(&mPollRtTimer, &QTimer::timeout, [this]() {
         if (ui->actionRtData->isChecked()) {
+            mVesc->commands()->getStats(0xFFFFFFFF);
             mVesc->commands()->getValues();
             mVesc->commands()->getValuesSetup();
-            mVesc->commands()->getStats(0xFFFFFFFF);
             mPollRtTimer.setInterval(int(1000.0 / mSettings.value("poll_rate_rt_data", 50).toDouble()));
         }
     });
@@ -514,6 +514,20 @@ MainWindow::MainWindow(QWidget *parent) :
         }
     });
 
+    mPortTimer.start(1000);
+    connect(&mPortTimer, &QTimer::timeout, [this]() {
+        QString theme = Utility::getThemePath();
+
+        if (!mVesc->isPortConnected() && mVesc->lastPortAvailable()) {
+            ui->actionReconnect->setIcon(QIcon(theme + "icons/Connected-hl-96.png"));
+        } else {
+            ui->actionReconnect->setIcon(QIcon(theme + "icons/Connected-96.png"));
+        }
+
+        ui->actionReconnect->setEnabled(!mVesc->isPortConnected());
+        ui->actionDisconnect->setEnabled(mVesc->isPortConnected());
+    });
+
     // Restore size and position
     if (mSettings.contains("mainwindow/size")) {
         resize(mSettings.value("mainwindow/size").toSize());
@@ -530,6 +544,10 @@ MainWindow::MainWindow(QWidget *parent) :
         }
     }
 
+    mLastParamParserCPath = (mSettings.value("mainwindow/mLastParamParserCPath", "./confgenerator").toString());
+    mLastMCConfigXMLPath  = (mSettings.value("mainwindow/mLastMCConfigXMLPath", "./vesc_mcconf").toString());
+    mLastAppConfigXMLPath = (mSettings.value("mainwindow/mLastAppConfigXMLPath", "./vesc_appconf").toString());
+
     updateMotortype();
     updateAppToUse();
 
@@ -544,6 +562,9 @@ MainWindow::~MainWindow()
     mSettings.setValue("introVersion", VT_INTRO_VERSION);
     mSettings.setValue("mainwindow/position", pos());
     mSettings.setValue("mainwindow/maximized", isMaximized());
+    mSettings.setValue("mainwindow/mLastParamParserCPath", mLastParamParserCPath);
+    mSettings.setValue("mainwindow/mLastMCConfigXMLPath", mLastMCConfigXMLPath);
+    mSettings.setValue("mainwindow/mLastAppConfigXMLPath", mLastAppConfigXMLPath);
 
     if (!isMaximized()) {
         mSettings.setValue("mainwindow/size", size());
@@ -701,7 +722,8 @@ void MainWindow::timerSlot()
     }
 
     // Scan can bus on connect
-    if (mVesc->isPortConnected() && ui->canList->count() == 0 && ui->scanCanButton->isEnabled() && mVesc->fwRx()) {
+    if (mVesc->isPortConnected() && ui->canList->count() == 0 &&
+            ui->scanCanButton->isEnabled() && mVesc->fwRx() && mVesc->customConfigRxDone()) {
         on_scanCanButton_clicked();
     }
 
@@ -731,8 +753,11 @@ void MainWindow::timerSlot()
         if (mVesc->commands()->getSendCan()) {
             int id_set = mVesc->commands()->getCanSendId();
             for (int i = 1; i <  ui->canList->count(); i++) {
-                int id_ui = ui->canList->item(i)->text().split(" ").last().toInt();
-                if (id_ui == id_set) {
+                int id = 0;
+                auto current = ui->canList->itemWidget(ui->canList->item(i));
+                bool ok = QMetaObject::invokeMethod(current, "getID", Q_RETURN_ARG(int, id));
+
+                if (ok && id == id_set) {
                     ui->canList->setCurrentRow(i);
                     break;
                 }
@@ -1038,7 +1063,7 @@ void MainWindow::on_actionSaveMotorConfXml_triggered()
     QString path;
     path = QFileDialog::getSaveFileName(this,
                                         tr("Choose where to save the motor configuration XML file"),
-                                        ".",
+                                        mLastMCConfigXMLPath,
                                         tr("Xml files (*.xml)"));
 
     if (path.isNull()) {
@@ -1053,6 +1078,7 @@ void MainWindow::on_actionSaveMotorConfXml_triggered()
 
     if (res) {
         showStatusInfo("Saved motor configuration", true);
+        mLastMCConfigXMLPath = path;
     } else {
         showMessageDialog(tr("Save motor configuration"),
                           tr("Could not save motor configuration:<BR>"
@@ -1066,7 +1092,7 @@ void MainWindow::on_actionLoadMotorConfXml_triggered()
     QString path;
     path = QFileDialog::getOpenFileName(this,
                                         tr("Choose motor configuration file to load"),
-                                        ".",
+                                        mLastMCConfigXMLPath,
                                         tr("Xml files (*.xml)"));
 
     if (path.isNull()) {
@@ -1077,6 +1103,7 @@ void MainWindow::on_actionLoadMotorConfXml_triggered()
 
     if (res) {
         showStatusInfo("Loaded motor configuration", true);
+        mLastMCConfigXMLPath = path;
     } else {
         showMessageDialog(tr("Load motor configuration"),
                           tr("Could not load motor configuration:<BR>"
@@ -1090,7 +1117,7 @@ void MainWindow::on_actionSaveAppconfXml_triggered()
     QString path;
     path = QFileDialog::getSaveFileName(this,
                                         tr("Choose where to save the app configuration XML file"),
-                                        ".",
+                                        mLastAppConfigXMLPath,
                                         tr("Xml files (*.xml)"));
 
     if (path.isNull()) {
@@ -1105,6 +1132,7 @@ void MainWindow::on_actionSaveAppconfXml_triggered()
 
     if (res) {
         showStatusInfo("Saved app configuration", true);
+        mLastAppConfigXMLPath = path;
     } else {
         showMessageDialog(tr("Save app configuration"),
                           tr("Could not save app configuration:<BR>"
@@ -1118,7 +1146,7 @@ void MainWindow::on_actionLoadAppconfXml_triggered()
     QString path;
     path = QFileDialog::getOpenFileName(this,
                                         tr("Choose app configuration file to load"),
-                                        ".",
+                                        mLastAppConfigXMLPath,
                                         tr("Xml files (*.xml)"));
 
     if (path.isNull()) {
@@ -1129,6 +1157,7 @@ void MainWindow::on_actionLoadAppconfXml_triggered()
 
     if (res) {
         showStatusInfo("Loaded app configuration", true);
+        mLastAppConfigXMLPath = path;
     } else {
         showMessageDialog(tr("Load app configuration"),
                           tr("Could not load app configuration:<BR>"
@@ -1222,7 +1251,7 @@ void MainWindow::saveParamFileDialog(QString conf, bool wrapIfdef)
     QString path;
     path = QFileDialog::getSaveFileName(this,
                                         tr("Choose where to save the configuration header file"),
-                                        ".",
+                                        QString("./%1_default").arg(conf.toLower()),
                                         tr("h files (*.h)"));
 
     if (path.isNull()) {
@@ -1297,6 +1326,11 @@ void MainWindow::reloadPages()
     mPageFirmware->setVesc(mVesc);
     ui->pageWidget->addWidget(mPageFirmware);
     addPageItem(tr("Firmware"),  theme + "icons/Electronics-96.png", "", true);
+
+    mPagePackage = new PageVescPackage(this);
+    mPagePackage->setVesc(mVesc);
+    ui->pageWidget->addWidget(mPagePackage);
+    addPageItem(tr("VESC Packages"),  theme + "icons/Package-96.png", "", true);
 
     mPageMotorSettings = new PageMotorSettings(this);
     mPageMotorSettings->setVesc(mVesc);
@@ -1458,7 +1492,7 @@ void MainWindow::reloadPages()
     mPageCustomConfig2->setVesc(mVesc);
     mPageCustomConfig2->setConfNum(2);
     ui->pageWidget->addWidget(mPageCustomConfig2);
-    addPageItem(tr("Config0"),  theme + "icons/Electronics-96.png", "", true);
+    addPageItem(tr("Config2"),  theme + "icons/Electronics-96.png", "", true);
     mPageNameIdList.insert("app_custom_config_2", ui->pageList->count() - 1);
     ui->pageList->item(ui->pageList->count() - 1)->setHidden(true);
 
@@ -1476,13 +1510,13 @@ void MainWindow::reloadPages()
     mPageSampledData = new PageSampledData(this);
     mPageSampledData->setVesc(mVesc);
     ui->pageWidget->addWidget(mPageSampledData);
-    addPageItem(tr("Sampled Data"),  theme + "icons/Gyroscope-96.png", "", false, true);
+    addPageItem(tr("Sampled Data"),  theme + "icons/Line Chart-96.png", "", false, true);
     mPageNameIdList.insert("data_sampled", ui->pageList->count() - 1);
 
     mPageImu = new PageImu(this);
     mPageImu->setVesc(mVesc);
     ui->pageWidget->addWidget(mPageImu);
-    addPageItem(tr("IMU Data"),  theme + "icons/Line Chart-96.png", "", false, true);
+    addPageItem(tr("IMU Data"),  theme + "icons/Gyroscope-96.png", "", false, true);
     mPageNameIdList.insert("data_imu", ui->pageList->count() - 1);
 
     mPageBms = new PageBms(this);
@@ -1530,6 +1564,11 @@ void MainWindow::reloadPages()
     mPageSwdProg->setVesc(mVesc);
     ui->pageWidget->addWidget(mPageSwdProg);
     addPageItem(tr("SWD Programmer"),  theme + "icons/Electronics-96.png", "", true);
+
+    mPageEspProg = new PageEspProg(this);
+    mPageEspProg->setVesc(mVesc);
+    ui->pageWidget->addWidget(mPageEspProg);
+    addPageItem(tr("ESP Programmer"),  theme + "icons/Electronics-96.png", "", true);
 
     /*
      * Page IDs
@@ -1885,7 +1924,7 @@ void MainWindow::on_actionExportConfigurationParser_triggered()
     QString path;
     path = QFileDialog::getSaveFileName(this,
                                         tr("Choose where to save the parser C source and header file"),
-                                        ".",
+                                        mLastParamParserCPath,
                                         tr("C Source/Header files (*.c *.h)"));
 
     if (path.isNull()) {
@@ -1893,6 +1932,7 @@ void MainWindow::on_actionExportConfigurationParser_triggered()
     }
 
     Utility::createParamParserC(mVesc, path);
+    mLastParamParserCPath = path;
 }
 
 void MainWindow::on_actionBackupConfiguration_triggered()

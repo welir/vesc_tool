@@ -74,6 +74,10 @@ Item {
         multiSettings.openDialog()
     }
 
+    function openWizardIMU() {
+        imuWizard.openDialog()
+    }
+
     function openBleSetup() {
         if (!VescIf.isPortConnected()) {
             VescIf.emitMessageDialog("BLE Setup",
@@ -93,6 +97,11 @@ Item {
 
     SetupWizardFoc {
         id: focWizard
+        dialogParent: container
+    }
+
+    SetupWizardIMU {
+        id: imuWizard
         dialogParent: container
     }
 
@@ -266,6 +275,36 @@ Item {
         }
     }
 
+    Rectangle {
+        parent: container
+        anchors.fill: parent
+        color: "black"
+
+        ConnectScreen {
+            id: connScreen
+            x: 0
+            y: 0
+            height: parent.height
+            width: parent.width
+            opened: true
+
+            Component.onCompleted: {
+                VescIf.bleDevice().emitScanDone()
+            }
+
+            onYChanged: {
+                parent.color.a = Math.min(1, Math.max(1 - y / height, 0))
+            }
+        }
+    }
+
+    Connections {
+        target: VescIf
+        function onPortConnectedChanged() {
+            connScreen.opened = VescIf.isPortConnected() ? false : true
+        }
+    }
+
     property var hwUiObj: 0
 
     function updateHwUi () {
@@ -335,13 +374,18 @@ Item {
     Connections {
         target: VescIf
 
-        onFwRxChanged: {
+        function onFwRxChanged(rx, limited) {
             updateHwUi()
             updateAppUi()
         }
 
-        onQmlLoadDone: {
-            qmlLoadDialog.open()
+        function onQmlLoadDone() {
+            if (VescIf.askQmlLoad()) {
+                qmlLoadDialog.open()
+            } else {
+                updateHwUi()
+                updateAppUi()
+            }
         }
     }
 
@@ -395,19 +439,31 @@ Item {
         parent: container
         y: parent.y + parent.height / 2 - height / 2
 
-        Text {
-            color: {color = Utility.getAppHexColor("lightText")}
-            verticalAlignment: Text.AlignVCenter
+        ColumnLayout {
             anchors.fill: parent
-            wrapMode: Text.WordWrap
-            text:
-                "The hardware you are connecting to contains code that will alter the " +
-                "user interface of VESC Tool. This code has not been verified by the " +
-                "authors of VESC Tool and could contain bugs and security problems. \n\n" +
-                "Do you want to load this custom user interface?"
+
+            Text {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: Utility.getAppHexColor("lightText")
+                verticalAlignment: Text.AlignVCenter
+                wrapMode: Text.WordWrap
+                text:
+                    "The hardware you are connecting to contains code that will alter the " +
+                    "user interface of VESC Tool. This code has not been verified by the " +
+                    "authors of VESC Tool and could contain bugs and security problems. \n\n" +
+                    "Do you want to load this custom user interface?"
+            }
+
+            CheckBox {
+                Layout.fillWidth: true
+                id: qmlDoNotAskAgainBox
+                text: "Load without asking"
+            }
         }
 
         onAccepted: {
+            VescIf.setAskQmlLoad(!qmlDoNotAskAgainBox.checked)
             updateHwUi()
             updateAppUi()
         }

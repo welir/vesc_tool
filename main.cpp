@@ -18,6 +18,7 @@
     */
 
 #include "mainwindow.h"
+#include "boardsetupwindow.h"
 #include "mobile/qmlui.h"
 #include "mobile/fwhelper.h"
 #include "mobile/vesc3ditem.h"
@@ -25,12 +26,20 @@
 #include "mobile/logreader.h"
 #include "tcpserversimple.h"
 #include "pages/pagemotorcomparison.h"
+#include "codeloader.h"
+#include "configparam.h"
 
 #include <QApplication>
 #include <QStyleFactory>
 #include <QSettings>
 #include <QDesktopWidget>
 #include <QFontDatabase>
+
+#include "tcphub.h"
+
+#ifndef HAS_BLUETOOTH
+#include "bleuartdummy.h"
+#endif
 
 #ifdef Q_OS_IOS
 #include "ios/src/setIosParameters.h"
@@ -71,7 +80,10 @@ static void showHelp()
     qDebug() << "--qmlRotation [deg] : Rotate screen by deg degrees";
     qDebug() << "--retryConn : Keep trying to reconnect to the VESC when the connection fails";
     qDebug() << "--useMobileUi : Start the mobile UI instead of the full desktop UI";
-
+    qDebug() << "--tcpHub [port] : Start a TCP hub for remote access to connected VESCs";
+    qDebug() << "--buildPkg [pkgPath:lispPath:qmlPath:isFullscreen:optMd:optName] : Build VESC Package";
+    qDebug() << "--useBoardSetupWindow : Start board setup window instead of the main UI";
+    qDebug() << "--xmlConfToCode [xml-file] : Generate C code from XML configuration file (the files are saved in the same directory as the XML)";
 }
 
 #ifdef Q_OS_LINUX
@@ -178,6 +190,8 @@ int main(int argc, char *argv[])
 
 #ifdef HAS_BLUETOOTH
     qmlRegisterType<BleUart>("Vedder.vesc.bleuart", 1, 0, "BleUart");
+#else
+    qmlRegisterType<BleUartDummy>("Vedder.vesc.bleuart", 1, 0, "BleUart");
 #endif
     qmlRegisterType<Commands>("Vedder.vesc.commands", 1, 0, "Commands");
     qmlRegisterType<ConfigParams>("Vedder.vesc.configparams", 1, 0, "ConfigParams");
@@ -187,7 +201,10 @@ int main(int argc, char *argv[])
     qmlRegisterType<Vesc3dItem>("Vedder.vesc.vesc3ditem", 1, 0, "Vesc3dItem");
     qmlRegisterType<LogWriter>("Vedder.vesc.logwriter", 1, 0, "LogWriter");
     qmlRegisterType<LogReader>("Vedder.vesc.logreader", 1, 0, "LogReader");
+    qmlRegisterType<TcpHub>("Vedder.vesc.tcphub", 1, 0, "TcpHub");
+    qmlRegisterType<CodeLoader>("Vedder.vesc.codeloader", 1, 0, "CodeLoader");
 
+    qRegisterMetaType<VSerialInfo_t>();
     qRegisterMetaType<MCCONF_TEMP>();
     qRegisterMetaType<MC_VALUES>();
     qRegisterMetaType<BMS_VALUES>();
@@ -195,6 +212,12 @@ int main(int argc, char *argv[])
     qRegisterMetaType<PSW_STATUS>();
     qRegisterMetaType<IO_BOARD_VALUES>();
     qRegisterMetaType<MotorData>();
+    qRegisterMetaType<ENCODER_DETECT_RES>();
+    qRegisterMetaType<FILE_LIST_ENTRY>();
+    qRegisterMetaType<VescPackage>();
+    qRegisterMetaType<TCP_HUB_DEVICE>();
+    qRegisterMetaType<ConfigParam>();
+    qRegisterMetaType<GNSS_DATA>();
 
 #ifdef USE_MOBILE
 #ifndef DEBUG_BUILD
@@ -223,7 +246,11 @@ int main(int argc, char *argv[])
     bool loadQmlVesc = false;
     bool qmlOtherScreen = false;
     bool useMobileUi = false;
+    bool useBoardSetupWindow = false;
     double qmlRot = 0.0;
+    bool isTcpHub = false;
+    QStringList pkgArgs;
+    QString xmlCodePath = "";
 
     for (int i = 0;i < args.size();i++) {
         // Skip the program argument
@@ -298,6 +325,11 @@ int main(int argc, char *argv[])
             found = true;
         }
 
+        if (str == "--useBoardSetupWindow") {
+            useBoardSetupWindow = true;
+            found = true;
+        }
+
         if (str.startsWith("-qmljsdebugger")) {
             found = true;
         }
@@ -313,6 +345,33 @@ int main(int argc, char *argv[])
                 return 1;
             }
         }
+        if (str == "--tcpHub") {
+            if ((i + 1) < args.size()) {
+                i++;
+                tcpPort = args.at(i).toInt();
+                isTcpHub = true;
+                found = true;
+            }
+        }
+        if (str == "--buildPkg") {
+            if ((i + 1) < args.size()) {
+                i++;
+                pkgArgs = args.at(i).split(":");
+                found = true;
+            }
+        }
+
+        if (str == "--xmlConfToCode") {
+            if ((i + 1) < args.size()) {
+                i++;
+                xmlCodePath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path to xml file";
+                return 1;
+            }
+        }
 
         if (!found) {
             if (dash) {
@@ -324,6 +383,124 @@ int main(int argc, char *argv[])
             showHelp();
             return 1;
         }
+    }
+
+    if (!xmlCodePath.isEmpty()) {
+        ConfigParams conf;
+        if (!conf.loadParamsXml(xmlCodePath)) {
+            qCritical() << "Could not parse XML-file" << xmlCodePath;
+            return 1;
+        }
+
+        QString nameConfig = "device_config";
+        if (conf.hasParam("config_name") && conf.getParam("config_name")->type == CFG_T_QSTRING) {
+            nameConfig = conf.getParamQString("config_name");
+        }
+
+        QFileInfo fi(xmlCodePath);
+        xmlCodePath.chop(fi.fileName().length());
+        QString pathDefines = xmlCodePath + "conf_default.h";
+        QString pathParser = xmlCodePath + "confparser.c";
+        QString pathCompressed = xmlCodePath + "confxml.c";
+
+        Utility::createCompressedConfigC(&conf, nameConfig, pathCompressed);
+        Utility::createParamParserC(&conf, nameConfig, pathParser);
+        conf.saveCDefines(pathDefines, true);
+
+        qDebug() << "Done!";
+        return 0;
+    }
+
+    if (!pkgArgs.isEmpty()) {
+        if (pkgArgs.size() < 4) {
+            qWarning() << "Invalid arguments";
+            return 1;
+        }
+
+        CodeLoader loader;
+        QString pkgPath = pkgArgs.at(0);
+        QString lispPath = pkgArgs.at(1);
+        QString qmlPath = pkgArgs.at(2);
+        bool isFullscreen = pkgArgs.at(3).toInt();
+
+        QString mdPath;
+        QString name;
+
+        VescPackage pkg;
+
+        if (pkgArgs.size() >= 6) {
+            mdPath = pkgArgs.at(4);
+            name = pkgArgs.at(5);
+
+            QFile f(mdPath);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                qWarning() << "Could not open markdown file for reading.";
+                return 1;
+            }
+
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+            QApplication a(argc, argv);
+            addFonts();
+
+            QTextDocument d;
+            d.setMarkdown(QString::fromUtf8(f.readAll()));
+
+            f.close();
+
+            pkg.name = name;
+            pkg.description = d.toHtml();
+        } else {
+            QFile f(pkgPath);
+            if (!f.open(QIODevice::ReadOnly)) {
+                qWarning() << QString("Could not open %1 for reading.").arg(pkgPath);
+                return 1;
+            }
+
+            pkg = loader.unpackVescPackage(f.readAll());
+            f.close();
+
+            qDebug() << "Opened package" << pkg.name;
+        }
+
+        QFile file(pkgPath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            qWarning() << QString("Could not open %1 for writing.").arg(pkgPath);
+            return 1;
+        }
+
+        if (!lispPath.isEmpty()) {
+            QFile f(lispPath);
+            if (!f.open(QIODevice::ReadOnly)) {
+                qWarning() << "Could not open lisp file for reading.";
+                return 1;
+            }
+
+            QFileInfo fi(f);
+            pkg.lispData = loader.lispPackImports(f.readAll(), fi.canonicalPath());
+            f.close();
+
+            qDebug() << "Read lisp script done";
+        }
+
+        if (!qmlPath.isEmpty()) {
+            QFile f(qmlPath);
+            if (!f.open(QIODevice::ReadOnly)) {
+                qWarning() << "Could not open qml file for reading.";
+                return 1;
+            }
+
+            pkg.qmlFile = f.readAll();
+            pkg.qmlIsFullscreen =isFullscreen;
+            f.close();
+
+            qDebug() << "Read qml script done";
+        }
+
+        file.write(loader.packVescPackage(pkg));
+        file.close();
+
+        qDebug() << "Package Saved!";
+        return 0;
     }
 
     double scale = set.value("app_scale_factor", 1.0).toDouble();
@@ -359,7 +536,9 @@ int main(int argc, char *argv[])
     });
 #else
     VescInterface *vesc = nullptr;
+    TcpHub *tcpHub = nullptr;
     MainWindow *w = nullptr;
+    BoardSetupWindow *bw = nullptr;
     QmlUi *qmlUi = nullptr;
     QString qmlStr;
 
@@ -406,6 +585,16 @@ int main(int argc, char *argv[])
                 qWarning() << msg;
             }
         });
+    } else if (isTcpHub) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        app = new QCoreApplication(argc, argv);
+        tcpHub = new TcpHub;
+        if (tcpHub->start(tcpPort)) {
+            qDebug() << "TcpHub started";
+        } else {
+            qCritical() << "Could not start TcpHub on port" << tcpPort;
+            qApp->quit();
+        }
     } else {
         QApplication *a = new QApplication(argc, argv);
         app = a;
@@ -456,7 +645,7 @@ int main(int argc, char *argv[])
         // from the mobile UI. In the mobile UI these are provided as singletons, whereas
         // in the desktop GUI they are provided as context properties.
         qmlRegisterType<VescInterface>("Vedder.vesc.vescinterface", 1, 0, "VescIf2");
-        qmlRegisterType<VescInterface>("Vedder.vesc.utility", 1, 0, "Utility2");
+        qmlRegisterType<Utility>("Vedder.vesc.utility", 1, 0, "Utility2");
 
         if (!loadQml.isEmpty() || loadQmlVesc) {
             vesc = new VescInterface;
@@ -538,6 +727,9 @@ int main(int argc, char *argv[])
         } else if (useMobileUi) {
             qmlUi = new QmlUi;
             qmlUi->startQmlUi();
+        } else if (useBoardSetupWindow){
+            bw = new BoardSetupWindow;
+            bw->show();
         } else {
             w = new MainWindow;
             w->show();
@@ -555,6 +747,10 @@ int main(int argc, char *argv[])
 #else
     if (vesc) {
         delete vesc;
+    }
+
+    if (tcpHub) {
+        delete tcpHub;
     }
 
     if (w) {

@@ -1,5 +1,5 @@
 /*
-    Copyright 2016 - 2019 Benjamin Vedder	benjamin@vedder.se
+    Copyright 2016 - 2022 Benjamin Vedder	benjamin@vedder.se
 
     This file is part of VESC Tool.
 
@@ -23,9 +23,9 @@
 #include <QObject>
 #include <QTimer>
 #include <QMap>
-#include "vbytearray.h"
+#include <QVariant>
+#include <QVariantList>
 #include "datatypes.h"
-#include "packet.h"
 #include "configparams.h"
 
 class Commands : public QObject
@@ -75,6 +75,16 @@ public:
     Q_INVOKABLE bool getMaxPowerLossBug() const;
     void setMaxPowerLossBug(bool maxPowerLossBug);
 
+    Q_INVOKABLE QVariantList fileBlockList(QString path);
+    Q_INVOKABLE QByteArray fileBlockRead(QString path);
+    Q_INVOKABLE bool fileBlockWrite(QString path, QByteArray data);
+    Q_INVOKABLE bool fileBlockMkdir(QString path);
+    Q_INVOKABLE bool fileBlockRemove(QString path);
+    Q_INVOKABLE void fileBlockCancel();
+
+    Q_INVOKABLE double getFilePercentage() const;
+    Q_INVOKABLE double getFileSpeed() const;
+
 signals:
     void dataToSend(QByteArray &data);
 
@@ -95,7 +105,7 @@ signals:
     void decodedBalanceReceived(BALANCE_VALUES values);
     void motorRLReceived(double r, double l, double ld_lq_diff);
     void motorLinkageReceived(double flux_linkage);
-    void encoderParamReceived(double offset, double ratio, bool inverted);
+    void encoderParamReceived(ENCODER_DETECT_RES res);
     void customAppDataReceived(QByteArray data);
     void customHwDataReceived(QByteArray data);
     void focHallTableReceived(QVector<int> hall_table, int res);
@@ -131,12 +141,26 @@ signals:
     void writeQmluiResReceived(bool ok, quint32 offset);
     void ioBoardValRx(IO_BOARD_VALUES val);
     void statsRx(STAT_VALUES val, unsigned int mask);
+    void gnssRx(GNSS_DATA val, unsigned int mask);
     void lispReadCodeRx(int lenQml, int ofsQml, QByteArray data);
     void lispEraseCodeRx(bool ok);
     void lispWriteCodeRx(bool ok, quint32 offset);
     void lispPrintReceived(QString str);
     void lispStatsRx(LISP_STATS stats);
     void lispRunningResRx(bool ok);
+    void lispStreamCodeRx(quint32 offset, qint16 res);
+
+    void fileListRx(bool hasMore, QList<FILE_LIST_ENTRY> files);
+    void fileReadRx(qint32 offset, qint32 size, QByteArray data);
+    void fileWriteRx(qint32 offset, bool ok);
+    void fileMkdirRx(bool ok);
+    void fileRemoveRx(bool ok);
+    void fileProgress(int32_t prog, int32_t tot, double percentage, double bytesPerSec);
+
+    void logStart(int fieldNum, double rateHz, bool appendTime, bool appendGnss, bool appendGnssTime);
+    void logStop();
+    void logConfigField(int fieldInd, LOG_HEADER header);
+    void logSamples(int fieldStart, QVector<double> samples);
 
 public slots:
     void processPacket(QByteArray data);
@@ -164,6 +188,7 @@ public slots:
     void getAppConf();
     void getAppConfDefault();
     void setAppConf();
+    void setAppConfNoStore();
     void detectMotorParam(double current, double min_rpm, double low_duty);
     void reboot();
     void sendAlive();
@@ -224,7 +249,7 @@ public slots:
 
     void customConfigGetChunk(int confInd, int len, int offset);
     void customConfigGet(int confInd, bool isDefault);
-    void customConfigSet(int confInd, QByteArray confData);
+    void customConfigSet(int confInd, ConfigParams *conf);
 
     void pswGetStatus(bool by_id, int id_ind);
     void pswSwitch(int id, bool is_on, bool plot);
@@ -241,8 +266,11 @@ public slots:
     void getStats(unsigned int mask);
     void resetStats(bool sendAck);
 
+    void getGnss(unsigned int mask);
+
     void lispReadCode(int len, int offset);
     void lispWriteCode(QByteArray data, quint32 offset);
+    void lispStreamCode(QByteArray data, quint32 offset, quint32 totLen, qint8 mode);
     void lispEraseCode();
     void lispSetRunning(bool running);
     void lispGetStats();
@@ -250,6 +278,12 @@ public slots:
 
     void setBleName(QString name);
     void setBlePin(QString pin);
+
+    void fileList(QString path, QString from);
+    void fileRead(QString path, qint32 offset);
+    void fileWrite(QString path, qint32 offset, qint32 size, QByteArray data);
+    void fileMkdir(QString path);
+    void fileRemove(QString path);
 
 private slots:
     void timerSlot();
@@ -287,6 +321,10 @@ private:
     int mTimeoutCustomConf;
     int mTimeoutBmsVal;
     int mTimeoutStats;
+
+    double mFilePercentage;
+    double mFileSpeed;
+    bool mFileShouldCancel;
 
 };
 

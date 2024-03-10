@@ -495,6 +495,20 @@ ApplicationWindow {
                 }
             }
         }
+
+        Page {
+            Loader {
+                anchors.fill: parent
+                asynchronous: true
+                visible: status == Loader.Ready
+                sourceComponent: Packages {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    anchors.topMargin: 10
+                }
+            }
+        }
     }
 
     header: Rectangle {
@@ -529,7 +543,7 @@ ApplicationWindow {
                 Repeater {
                     id: rep
                     model: ["Start", "RT Data", "Profiles", "BMS", "Firmware", "Motor Cfg",
-                        "App Cfg", "Terminal"]
+                        "App Cfg", "Terminal", "Packages"]
 
                     TabButton {
                         text: modelData
@@ -574,6 +588,29 @@ ApplicationWindow {
             id: uiApp
             anchors.fill: parent
             property var tabBarItem: tabBar
+        }
+    }
+
+    TabButton {
+        id: confCustomButton
+        visible: confCustomPage.visible
+        text: "ConfCustom"
+        width: tabBar.buttonWidth
+    }
+
+    Page {
+        id: confCustomPage
+        visible: false
+
+        Loader {
+            id: confCustomLoader
+            anchors.fill: parent
+            asynchronous: true
+            sourceComponent: ConfigPageCustom {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
+            }
         }
     }
 
@@ -715,6 +752,11 @@ ApplicationWindow {
             height: parent.height
             width: parent.width
             opened: true
+
+            Component.onCompleted: {
+                startBleScan()
+            }
+
             onYChanged: {
                 parent.color.a = Math.min(1, Math.max(1 - y / height, 0))
 
@@ -963,6 +1005,20 @@ ApplicationWindow {
         }
     }
 
+    function updateConfCustom () {
+        if (VescIf.isPortConnected() && VescIf.customConfig(0) !== null) {
+            swipeView.insertItem(5, confCustomPage)
+            tabBar.insertItem(5, confCustomButton)
+            confCustomPage.visible = true
+            confCustomLoader.item.reloadConfig()
+            confCustomButton.text = VescIf.customConfig(0).getLongName("hw_name")
+        } else {
+            confCustomPage.visible = false
+            confCustomPage.parent = null
+            confCustomButton.parent = null
+        }
+    }
+
     function indexOffset() {
         var res = 0
         if (uiHwButton.visible) {
@@ -976,7 +1032,7 @@ ApplicationWindow {
 
     Connections {
         target: VescIf
-        onPortConnectedChanged: {
+        function onPortConnectedChanged() {
             connectedText.text = VescIf.getConnectedPortName()
             if (!VescIf.isPortConnected()) {
                 confTimer.mcConfRx = false
@@ -995,18 +1051,18 @@ ApplicationWindow {
             }
         }
 
-        onUnintentionalBleDisconnect: {
+        function onUnintentionalBleDisconnect() {
             bleDisconnectTimer.trysLeft = 5
             bleDisconnectTimer.start()
         }
 
-        onStatusMessage: {
+        function onStatusMessage(msg, isGood) {
             connectedText.text = msg
             connectedRect.color = isGood ? Utility.getAppHexColor("lightAccent") : Utility.getAppHexColor("red")
             statusTimer.restart()
         }
 
-        onMessageDialog: {
+        function onMessageDialog(title, msg, isGood, richText) {
             vescDialog.title = title
             vescDialogLabel.text = (richText ? "<style>a:link { color: lightblue; }</style>" : "") + msg
             vescDialogLabel.textFormat = richText ? Text.RichText : Text.AutoText
@@ -1014,12 +1070,12 @@ ApplicationWindow {
             vescDialog.open()
         }
 
-        onFwRxChanged: {
+        function onFwRxChanged(rx, limited) {
             if (rx) {
                 if (limited && !VescIf.getFwSupportsConfiguration()) {
                     confPageMotor.enabled = false
                     confPageApp.enabled = false
-                    swipeView.setCurrentIndex(4 + indexOffset())
+                    swipeView.setCurrentIndex(4 + indexOffset() + (confCustomPage.visible ? 1 : 0))
                 } else {
                     confPageMotor.enabled = true
                     confPageApp.enabled = true
@@ -1028,21 +1084,32 @@ ApplicationWindow {
                 }
                 fwReadCorrectly = true
                 bleDisconnectTimer.stop()
+            } else {
+                updateConfCustom()
             }
 
             updateHwUi()
             updateAppUi()
         }
 
-        onQmlLoadDone: {
-            qmlLoadDialog.open()
+        function onQmlLoadDone() {
+            if (VescIf.askQmlLoad()) {
+                qmlLoadDialog.open()
+            } else {
+                updateHwUi()
+                updateAppUi()
+            }
+        }
+
+        function onCustomConfigLoadDone() {
+            updateConfCustom()
         }
     }
 
     Connections {
         target: mMcConf
 
-        onUpdated: {
+        function onUpdated() {
             confTimer.mcConfRx = true
         }
     }
@@ -1050,14 +1117,14 @@ ApplicationWindow {
     Connections {
         target: mAppConf
 
-        onUpdated: {
+        function onUpdated() {
             confTimer.appConfRx = true
         }
     }
 
     Connections {
         target: mCommands
-        onValuesImuReceived: {
+        function onValuesImuReceived(values, mask) {
             if (tabBar.currentIndex == (1 + indexOffset()) && rtSwipeView.currentIndex == 2) {
                 vesc3dLoader.item.setRotation(values.roll, values.pitch,
                                               useYawBox.checked ? values.yaw : 0)
@@ -1065,7 +1132,7 @@ ApplicationWindow {
             }
         }
 
-        onDeserializeConfigFailed: {
+        function onDeserializeConfigFailed(isMc, isApp) {
             if (isMc) {
                 confTimer.mcConfRx = true
             }
@@ -1093,19 +1160,31 @@ ApplicationWindow {
         parent: ApplicationWindow.overlay
         y: parent.y + parent.height / 2 - height / 2
 
-        Text {
-            color: Utility.getAppHexColor("lightText")
-            verticalAlignment: Text.AlignVCenter
+        ColumnLayout {
             anchors.fill: parent
-            wrapMode: Text.WordWrap
-            text:
-                "The hardware you are connecting to contains code that will alter the " +
-                "user interface of VESC Tool. This code has not been verified by the " +
-                "authors of VESC Tool and could contain bugs and security problems. \n\n" +
-                "Do you want to load this custom user interface?"
+
+            Text {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: Utility.getAppHexColor("lightText")
+                verticalAlignment: Text.AlignVCenter
+                wrapMode: Text.WordWrap
+                text:
+                    "The hardware you are connecting to contains code that will alter the " +
+                    "user interface of VESC Tool. This code has not been verified by the " +
+                    "authors of VESC Tool and could contain bugs and security problems. \n\n" +
+                    "Do you want to load this custom user interface?"
+            }
+
+            CheckBox {
+                Layout.fillWidth: true
+                id: qmlDoNotAskAgainBox
+                text: "Load without asking"
+            }
         }
 
         onAccepted: {
+            VescIf.setAskQmlLoad(!qmlDoNotAskAgainBox.checked)
             updateHwUi()
             updateAppUi()
         }

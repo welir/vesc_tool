@@ -65,6 +65,11 @@ PageConnection::PageConnection(QWidget *parent) :
     ui->autoConnectButton->setIcon(QPixmap(theme + "icons/Wizard-96.png"));
     ui->bleSetNameButton->setIcon(QPixmap(theme + "icons/Ok-96.png"));
     ui->pairConnectedButton->setIcon(QPixmap(theme + "icons/Circled Play-96.png"));
+    ui->tcpHubConnectButton->setIcon(QPixmap(theme + "icons/Connected-96.png"));
+    ui->tcpHubDisconnectButton->setIcon(QPixmap(theme + "icons/Disconnected-96.png"));
+    ui->hubDefaultButton->setIcon(QPixmap(theme + "icons/Restart-96.png"));
+    ui->tcpDetectConnectButton->setIcon(QPixmap(theme + "icons/Connected-96.png"));
+    ui->tcpDetectDisconnectButton->setIcon(QPixmap(theme + "icons/Disconnected-96.png"));
 
     QIcon mycon = QIcon(theme + "icons/can_off.png");
     mycon.addPixmap(QPixmap(theme + "icons/can_off.png"), QIcon::Normal, QIcon::Off);
@@ -120,6 +125,11 @@ void PageConnection::setVesc(VescInterface *vesc)
 
     ui->udpServerEdit->setText(mVesc->getLastUdpServer());
     ui->udpPortBox->setValue(mVesc->getLastUdpPort());
+
+    ui->tcpHubServerEdit->setText(mVesc->getLastTcpHubServer());
+    ui->tcpHubPortBox->setValue(mVesc->getLastTcpHubPort());
+    ui->tcpHubVescIdLineEdit->setText(mVesc->getLastTcpHubVescID());
+    ui->tcpHubVescPasswordLineEdit->setText(mVesc->getLastTcpHubVescPass());
 
 #ifdef HAS_BLUETOOTH
     connect(mVesc->bleDevice(), SIGNAL(scanDone(QVariantMap,bool)),
@@ -345,8 +355,9 @@ void PageConnection::on_serialRefreshButton_clicked()
 {
     if (mVesc) {
         ui->serialPortBox->clear();
-        QList<VSerialInfo_t> ports = mVesc->listSerialPorts();
-        foreach(const VSerialInfo_t &port, ports) {
+        auto ports = mVesc->listSerialPorts();
+        foreach(auto &info, ports) {
+            auto port = info.value<VSerialInfo_t>();
             ui->serialPortBox->addItem(port.name, port.systemPath);
         }
         ui->serialPortBox->setCurrentIndex(0);
@@ -706,4 +717,37 @@ void PageConnection::on_tcpDetectDisconnectButton_clicked()
     if (mVesc) {
         mVesc->disconnectPort();
     }
+}
+
+void PageConnection::on_tcpHubConnectButton_clicked()
+{
+    if (mVesc) {
+        QString tcpServer = ui->tcpHubServerEdit->text();
+        int tcpPort = ui->tcpHubPortBox->value();
+        QString uuid = ui->tcpHubVescIdLineEdit->text().replace(" ", "").replace(":", "").toUpper();
+        QString pass = ui->tcpHubVescPasswordLineEdit->text();
+
+        if (ui->hubClientButton->isChecked()) {
+            mVesc->connectTcpHub(tcpServer, tcpPort, uuid, pass);
+        } else {
+            mVesc->tcpServerConnectToHub(tcpServer, tcpPort, uuid, pass);
+        }
+    }
+}
+
+void PageConnection::on_tcpHubDisconnectButton_clicked()
+{
+    if (mVesc) {
+        if (ui->hubClientButton->isChecked()) {
+            mVesc->disconnectPort();
+        } else {
+            mVesc->tcpServerStop();
+        }
+    }
+}
+
+void PageConnection::on_hubDefaultButton_clicked()
+{
+    ui->tcpHubServerEdit->setText("veschub.vedder.se");
+    ui->tcpHubPortBox->setValue(65101);
 }

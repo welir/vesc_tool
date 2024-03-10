@@ -52,6 +52,7 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     mInfoConfig = new ConfigParams(this);
     mFwConfig = new ConfigParams(this);
     mCustomConfigsLoaded = false;
+    mCustomConfigRxDone = false;
     mQmlHwLoaded = false;
     mQmlAppLoaded = false;
     mPacket = new Packet(this);
@@ -80,6 +81,10 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     mLastConnType = static_cast<conn_t>(mSettings.value("connection_type", CONN_NONE).toInt());
     mLastTcpServer = mSettings.value("tcp_server", "127.0.0.1").toString();
     mLastTcpPort = mSettings.value("tcp_port", 65102).toInt();
+    mLastTcpHubServer = mSettings.value("tcp_hub_server", "veschub.vedder.se").toString();
+    mLastTcpHubPort = mSettings.value("tcp_hub_port", 65101).toInt();
+    mLastTcpHubVescID = mSettings.value("tcp_hub_vesc_id", "").toString();
+    mLastTcpHubVescPass = mSettings.value("tcp_hub_vesc_pass", "").toString();
     mLastUdpServer = QHostAddress(mSettings.value("udp_server", "127.0.0.1").toString());
     mLastUdpPort = mSettings.value("udp_port", 65102).toInt();
 
@@ -194,6 +199,8 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
         mSettings.setValue("ble_addr", mLastBleAddr);
     });
     connect(mBleUart, SIGNAL(unintentionalDisconnect()), this, SLOT(bleUnintentionalDisconnect()));
+#else
+    mBleUart = new BleUartDummy(this);
 #endif
 
     mTcpServer = new TcpServerSimple(this);
@@ -203,6 +210,20 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     });
     connect(mPacket, &Packet::packetReceived, [this](QByteArray &packet) {
         mTcpServer->packet()->sendPacket(packet);
+    });
+
+    mTimerBroadcast = new QTimer(this);
+    mTimerBroadcast->setInterval(1000);
+    mTimerBroadcast->start();
+    connect(mTimerBroadcast, &QTimer::timeout, [this]() {
+        if (mTcpServer->isServerRunning() && isPortConnected()) {
+            QUdpSocket *udp = new QUdpSocket(this);
+            QString dgram = QString("%1::%2::%3").
+                    arg(getLastFwRxParams().hw).
+                    arg(Utility::getNetworkAddresses().first().toString()).
+                    arg(mTcpServer->lastPort());
+            udp->writeDatagram(dgram.toLocal8Bit().data(), dgram.size(), QHostAddress::Broadcast, 65109);
+        }
     });
 
     mUdpServer = new UdpServerSimple(this);
@@ -234,6 +255,20 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     }
 
     {
+        int size = mSettings.beginReadArray("tcpHubDevices");
+        for (int i = 0; i < size; ++i) {
+            mSettings.setArrayIndex(i);
+            TCP_HUB_DEVICE dev;
+            dev.server = mSettings.value("server").toString();
+            dev.port = mSettings.value("port").toInt();
+            dev.id = mSettings.value("id").toString();
+            dev.password = mSettings.value("pw").toString();
+            mTcpHubDevs.append(QVariant::fromValue(dev));
+        }
+        mSettings.endArray();
+    }
+
+    {
         int size = mSettings.beginReadArray("pairedUuids");
         for (int i = 0; i < size; ++i) {
             mSettings.setArrayIndex(i);
@@ -252,6 +287,7 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
             cfg.vesc_uuid = uuid;
             cfg.mcconf_xml_compressed = mSettings.value("mcconf").toString();
             cfg.appconf_xml_compressed = mSettings.value("appconf").toString();
+            cfg.customconf_xml_compressed = mSettings.value("customconf").toString();
             cfg.name = mSettings.value("name", QString("")).toString();
             mConfigurationBackups.insert(uuid, cfg);
         }
@@ -267,6 +303,7 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     mLoadQmlUiOnConnect = mSettings.value("loadQmlUiOnConnect", true).toBool();
     mAllowScreenRotation = mSettings.value("allowScreenRotation", false).toBool();
     mSpeedGaugeUseNegativeValues =  mSettings.value("speedGaugeUseNegativeValues", true).toBool();
+    mAskQmlLoad =  mSettings.value("askQmlLoad", true).toBool();
 
     mCommands->setAppConfig(mAppConfig);
     mCommands->setMcConfig(mMcConfig);
@@ -399,8 +436,8 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
             os << mLastImuValues.gyroZ << ";";
 
             os << msPos << ";";
-            os << fixed << qSetRealNumberPrecision(8) << lat << ";";
-            os << fixed << qSetRealNumberPrecision(8) << lon << ";";
+            os << Qt::fixed << qSetRealNumberPrecision(8) << lat << ";";
+            os << Qt::fixed << qSetRealNumberPrecision(8) << lon << ";";
             os << alt << ";";
             os << gVel << ";";
             os << vVel << ";";
@@ -454,6 +491,9 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
 #endif
         }
     });
+
+    connect(mCommands, SIGNAL(customConfigRx(int,QByteArray)),
+            this, SLOT(customConfigRx(int,QByteArray)));
 
 #if VT_IS_TEST_VERSION
     QTimer::singleShot(1000, [this]() {
@@ -593,7 +633,7 @@ void VescInterface::storeSettings()
     mSettings.remove("profiles");
     mSettings.beginWriteArray("profiles");
     for (int i = 0; i < mProfiles.size(); ++i) {
-        MCCONF_TEMP cfg = mProfiles.value(i).value<MCCONF_TEMP>();
+        auto cfg = mProfiles.value(i).value<MCCONF_TEMP>();
         mSettings.setArrayIndex(i);
         mSettings.setValue("current_min_scale", cfg.current_min_scale);
         mSettings.setValue("current_max_scale", cfg.current_max_scale);
@@ -604,6 +644,18 @@ void VescInterface::storeSettings()
         mSettings.setValue("watt_min", cfg.watt_min);
         mSettings.setValue("watt_max", cfg.watt_max);
         mSettings.setValue("name", cfg.name);
+    }
+    mSettings.endArray();
+
+    mSettings.remove("tcpHubDevices");
+    mSettings.beginWriteArray("tcpHubDevices");
+    for (int i = 0; i < mTcpHubDevs.size(); ++i) {
+        auto dev = mTcpHubDevs.value(i).value<TCP_HUB_DEVICE>();
+        mSettings.setArrayIndex(i);
+        mSettings.setValue("server", dev.server);
+        mSettings.setValue("port", dev.port);
+        mSettings.setValue("id", dev.id);
+        mSettings.setValue("pw", dev.password);
     }
     mSettings.endArray();
 
@@ -625,6 +677,7 @@ void VescInterface::storeSettings()
             mSettings.setValue("uuid", i.key());
             mSettings.setValue("mcconf", i.value().mcconf_xml_compressed);
             mSettings.setValue("appconf", i.value().appconf_xml_compressed);
+            mSettings.setValue("customconf", i.value().customconf_xml_compressed);
             mSettings.setValue("name", i.value().name);
             ind++;
         }
@@ -638,6 +691,7 @@ void VescInterface::storeSettings()
     mSettings.setValue("darkMode", Utility::isDarkMode());
     mSettings.setValue("allowScreenRotation", mAllowScreenRotation);
     mSettings.setValue("speedGaugeUseNegativeValues", mSpeedGaugeUseNegativeValues);
+    mSettings.setValue("askQmlLoad", mAskQmlLoad);
     mSettings.sync();
 }
 
@@ -669,7 +723,7 @@ void VescInterface::deleteProfile(int index)
 void VescInterface::moveProfileUp(int index)
 {
     if (index > 0 && index < mProfiles.size()) {
-        mProfiles.swap(index, index - 1);
+        mProfiles.swapItemsAt(index, index - 1);
         emit profilesUpdated();
     }
 }
@@ -677,7 +731,7 @@ void VescInterface::moveProfileUp(int index)
 void VescInterface::moveProfileDown(int index)
 {
     if (index >= 0 && index < (mProfiles.size() - 1)) {
-        mProfiles.swap(index, index + 1);
+        mProfiles.swapItemsAt(index, index + 1);
         emit profilesUpdated();
     }
 }
@@ -1383,7 +1437,7 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
     int skipChunks = 0;
 
     bool useHeatshrink = false;
-    if (szTot > 393208) {
+    if (szTot > 393208 && szTot < 700000) { // If fw is much larger it is probably for the esp32
         useHeatshrink = true;
         qDebug() << "Firmware is big, using heatshrink compression library";
         int szOld = szTot;
@@ -1399,6 +1453,13 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
                                  "bootloader even after compression."), false);
             return false;
         }
+    }
+
+    if (szTot > 5000000) {
+        emitMessageDialog(tr("Firmware too big"),
+                          tr("The firmware you are trying to upload is unreasonably "
+                             "large, most likely it is an invalid file"), false);
+        return false;
     }
 
     if (!isBootloader) {
@@ -1714,104 +1775,9 @@ bool VescInterface::loadRtLogFile(QString file)
     QFile inFile(file);
 
     if (inFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream in(&inFile);
-        int lineNum = 0;
-
-        mRtLogData.clear();
-        while (!in.atEnd()) {
-            QStringList tokens = in.readLine().split(";");
-
-            if (tokens.size() == 1) {
-                tokens = tokens.at(0).split(",");
-            }
-
-            if (tokens.size() < 22) {
-                continue;
-            }
-
-            if (lineNum > 0) {
-                LOG_DATA d;
-                d.valTime = tokens.at(0).toInt();
-                d.values.v_in = tokens.at(1).toDouble();
-                d.values.temp_mos = tokens.at(2).toDouble();
-                d.values.temp_mos_1 = tokens.at(3).toDouble();
-                d.values.temp_mos_2 = tokens.at(4).toDouble();
-                d.values.temp_mos_3 = tokens.at(5).toDouble();
-                d.values.temp_motor = tokens.at(6).toDouble();
-                d.values.current_motor = tokens.at(7).toDouble();
-                d.values.current_in = tokens.at(8).toDouble();
-                d.values.id = tokens.at(9).toDouble();
-                d.values.iq = tokens.at(10).toDouble();
-                d.values.rpm = tokens.at(11).toDouble();
-                d.values.duty_now = tokens.at(12).toDouble();
-                d.values.amp_hours = tokens.at(13).toDouble();
-                d.values.amp_hours_charged = tokens.at(14).toDouble();
-                d.values.watt_hours = tokens.at(15).toDouble();
-                d.values.watt_hours_charged = tokens.at(16).toDouble();
-                d.values.tachometer = tokens.at(17).toInt();
-                d.values.tachometer_abs = tokens.at(18).toInt();
-                d.values.position = tokens.at(19).toDouble();
-                d.values.fault_code = mc_fault_code(tokens.at(20).toInt());
-                d.values.vesc_id = tokens.at(21).toInt();
-
-                // Possibly populate setup values too, but these values would
-                // not correspond to setupValTime.
-//                d.setupValues.v_in = d.values.v_in;
-//                d.setupValues.duty_now = d.values.duty_now;
-//                d.setupValues.temp_mos = d.values.temp_mos;
-//                d.setupValues.temp_motor = d.values.temp_motor;
-//                d.setupValues.fault_code = d.values.fault_code;
-//                d.setupValues.vesc_id = d.values.vesc_id;
-
-                if (tokens.size() >= 55) {
-                    d.values.vd = tokens.at(22).toDouble();
-                    d.values.vq = tokens.at(23).toDouble();
-
-                    d.setupValTime = tokens.at(24).toInt();
-                    d.setupValues.amp_hours = tokens.at(25).toDouble();
-                    d.setupValues.amp_hours_charged = tokens.at(26).toDouble();
-                    d.setupValues.watt_hours = tokens.at(27).toDouble();
-                    d.setupValues.watt_hours_charged = tokens.at(28).toDouble();
-                    d.setupValues.battery_level = tokens.at(29).toDouble();
-                    d.setupValues.battery_wh = tokens.at(30).toDouble();
-                    d.setupValues.current_in = tokens.at(31).toDouble();
-                    d.setupValues.current_motor = tokens.at(32).toDouble();
-                    d.setupValues.speed = tokens.at(33).toDouble();
-                    d.setupValues.tachometer = tokens.at(34).toDouble();
-                    d.setupValues.tachometer_abs = tokens.at(35).toDouble();
-                    d.setupValues.num_vescs = tokens.at(36).toInt();
-
-                    d.imuValTime = tokens.at(37).toInt();
-                    d.imuValues.roll = tokens.at(38).toDouble();
-                    d.imuValues.pitch = tokens.at(39).toDouble();
-                    d.imuValues.yaw = tokens.at(40).toDouble();
-                    d.imuValues.accX = tokens.at(41).toDouble();
-                    d.imuValues.accY = tokens.at(42).toDouble();
-                    d.imuValues.accZ = tokens.at(43).toDouble();
-                    d.imuValues.gyroX = tokens.at(44).toDouble();
-                    d.imuValues.gyroY = tokens.at(45).toDouble();
-                    d.imuValues.gyroZ = tokens.at(46).toDouble();
-
-                    d.posTime = tokens.at(47).toInt();
-                    d.lat = tokens.at(48).toDouble();
-                    d.lon = tokens.at(49).toDouble();
-                    d.alt = tokens.at(50).toDouble();
-                    d.gVel = tokens.at(51).toDouble();
-                    d.vVel = tokens.at(52).toDouble();
-                    d.hAcc = tokens.at(53).toDouble();
-                    d.vAcc = tokens.at(54).toDouble();
-                }
-
-                mRtLogData.append(d);
-            }
-
-            lineNum++;
-        }
-
+        auto data = inFile.readAll();
         inFile.close();
-        res = true;
-
-        emitStatusMessage(QString("Loaded %1 log entries").arg(lineNum - 1), true);
+        return loadRtLogFile(data);
     } else {
         emitMessageDialog("Read Log File",
                           "Could not open\n" +
@@ -1819,6 +1785,102 @@ bool VescInterface::loadRtLogFile(QString file)
                           "\nfor reading.",
                           false, false);
     }
+
+    return res;
+}
+
+bool VescInterface::loadRtLogFile(QByteArray data)
+{
+    bool res = false;
+
+    QTextStream in(&data);
+    int lineNum = 0;
+
+    mRtLogData.clear();
+    while (!in.atEnd()) {
+        QStringList tokens = in.readLine().split(";");
+
+        if (tokens.size() == 1) {
+            tokens = tokens.at(0).split(",");
+        }
+
+        if (tokens.size() < 22) {
+            continue;
+        }
+
+        if (lineNum > 0) {
+            LOG_DATA d;
+            d.valTime = tokens.at(0).toInt();
+            d.values.v_in = tokens.at(1).toDouble();
+            d.values.temp_mos = tokens.at(2).toDouble();
+            d.values.temp_mos_1 = tokens.at(3).toDouble();
+            d.values.temp_mos_2 = tokens.at(4).toDouble();
+            d.values.temp_mos_3 = tokens.at(5).toDouble();
+            d.values.temp_motor = tokens.at(6).toDouble();
+            d.values.current_motor = tokens.at(7).toDouble();
+            d.values.current_in = tokens.at(8).toDouble();
+            d.values.id = tokens.at(9).toDouble();
+            d.values.iq = tokens.at(10).toDouble();
+            d.values.rpm = tokens.at(11).toDouble();
+            d.values.duty_now = tokens.at(12).toDouble();
+            d.values.amp_hours = tokens.at(13).toDouble();
+            d.values.amp_hours_charged = tokens.at(14).toDouble();
+            d.values.watt_hours = tokens.at(15).toDouble();
+            d.values.watt_hours_charged = tokens.at(16).toDouble();
+            d.values.tachometer = tokens.at(17).toInt();
+            d.values.tachometer_abs = tokens.at(18).toInt();
+            d.values.position = tokens.at(19).toDouble();
+            d.values.fault_code = mc_fault_code(tokens.at(20).toInt());
+            d.values.vesc_id = tokens.at(21).toInt();
+
+            if (tokens.size() >= 55) {
+                d.values.vd = tokens.at(22).toDouble();
+                d.values.vq = tokens.at(23).toDouble();
+
+                d.setupValTime = tokens.at(24).toInt();
+                d.setupValues.amp_hours = tokens.at(25).toDouble();
+                d.setupValues.amp_hours_charged = tokens.at(26).toDouble();
+                d.setupValues.watt_hours = tokens.at(27).toDouble();
+                d.setupValues.watt_hours_charged = tokens.at(28).toDouble();
+                d.setupValues.battery_level = tokens.at(29).toDouble();
+                d.setupValues.battery_wh = tokens.at(30).toDouble();
+                d.setupValues.current_in = tokens.at(31).toDouble();
+                d.setupValues.current_motor = tokens.at(32).toDouble();
+                d.setupValues.speed = tokens.at(33).toDouble();
+                d.setupValues.tachometer = tokens.at(34).toDouble();
+                d.setupValues.tachometer_abs = tokens.at(35).toDouble();
+                d.setupValues.num_vescs = tokens.at(36).toInt();
+
+                d.imuValTime = tokens.at(37).toInt();
+                d.imuValues.roll = tokens.at(38).toDouble();
+                d.imuValues.pitch = tokens.at(39).toDouble();
+                d.imuValues.yaw = tokens.at(40).toDouble();
+                d.imuValues.accX = tokens.at(41).toDouble();
+                d.imuValues.accY = tokens.at(42).toDouble();
+                d.imuValues.accZ = tokens.at(43).toDouble();
+                d.imuValues.gyroX = tokens.at(44).toDouble();
+                d.imuValues.gyroY = tokens.at(45).toDouble();
+                d.imuValues.gyroZ = tokens.at(46).toDouble();
+
+                d.posTime = tokens.at(47).toInt();
+                d.lat = tokens.at(48).toDouble();
+                d.lon = tokens.at(49).toDouble();
+                d.alt = tokens.at(50).toDouble();
+                d.gVel = tokens.at(51).toDouble();
+                d.vVel = tokens.at(52).toDouble();
+                d.hAcc = tokens.at(53).toDouble();
+                d.vAcc = tokens.at(54).toDouble();
+            }
+
+            mRtLogData.append(d);
+        }
+
+        lineNum++;
+    }
+
+    res = true;
+
+    emitStatusMessage(QString("Loaded %1 log entries").arg(lineNum - 1), true);
 
     return res;
 }
@@ -1947,6 +2009,16 @@ bool VescInterface::speedGaugeUseNegativeValues()
 void VescInterface::setSpeedGaugeUseNegativeValues(bool useNegativeValues)
 {
     mSpeedGaugeUseNegativeValues = useNegativeValues;
+}
+
+bool VescInterface::askQmlLoad() const
+{
+    return mAskQmlLoad;
+}
+
+void VescInterface::setAskQmlLoad(bool newAskQmlLoad)
+{
+    mAskQmlLoad = newAskQmlLoad;
 }
 
 #ifdef HAS_SERIALPORT
@@ -2097,6 +2169,9 @@ bool VescInterface::reconnectLastPort()
     } else if (mLastConnType == CONN_TCP) {
         connectTcp(mLastTcpServer, mLastTcpPort);
         return true;
+    } else if (mLastConnType == CONN_TCP_HUB) {
+        connectTcpHub(mLastTcpHubServer, mLastTcpHubPort, mLastTcpHubVescID, mLastTcpHubVescPass);
+        return true;
     } else if (mLastConnType == CONN_UDP) {
         connectUdp(mLastUdpServer.toString(), mLastUdpPort);
         return true;
@@ -2113,9 +2188,9 @@ bool VescInterface::reconnectLastPort()
 #endif
     } else {
 #ifdef HAS_SERIALPORT
-        QList<VSerialInfo_t> ports = listSerialPorts();
+        auto ports = listSerialPorts();
         if (!ports.isEmpty()) {
-            return connectSerial(ports.first().systemPath);
+            return connectSerial(ports.first().value<VSerialInfo_t>().systemPath);
         } else  {
             emit messageDialog(tr("Reconnect"), tr("No ports found"), false, false);
             return false;
@@ -2130,12 +2205,32 @@ bool VescInterface::reconnectLastPort()
     }
 }
 
+bool VescInterface::lastPortAvailable()
+{
+    bool res = false;
+
+#ifdef HAS_SERIALPORT
+    if (mLastConnType == CONN_SERIAL) {
+        auto ports = listSerialPorts();
+        foreach (auto port, ports) {
+            auto p = port.value<VSerialInfo_t>();
+            if (p.systemPath == mLastSerialPort) {
+                res = true;
+                break;
+            }
+        }
+    }
+#endif
+
+    return res;
+}
+
 bool VescInterface::autoconnect()
 {
     bool res = false;
 
 #ifdef HAS_SERIALPORT
-    QList<VSerialInfo_t> ports = listSerialPorts();
+    auto ports = listSerialPorts();
     mAutoconnectOngoing = true;
     mAutoconnectProgress = 0.0;
 
@@ -2144,7 +2239,7 @@ bool VescInterface::autoconnect()
                this, SLOT(fwVersionReceived(FW_RX_PARAMS)));
 
     for (int i = 0;i < ports.size();i++) {
-        VSerialInfo_t serial = ports[i];
+        VSerialInfo_t serial = ports[i].value<VSerialInfo_t>();
 
         if (!connectSerial(serial.systemPath)) {
             continue;
@@ -2236,8 +2331,8 @@ bool VescInterface::connectSerial(QString port, int baudrate)
 {
 #ifdef HAS_SERIALPORT
     bool found = false;
-    for (VSerialInfo_t ser: listSerialPorts()) {
-        if (ser.systemPath == port) {
+    for (auto ser: listSerialPorts()) {
+        if (ser.value<VSerialInfo_t>().systemPath == port) {
             found = true;
             break;
         }
@@ -2292,9 +2387,9 @@ bool VescInterface::connectSerial(QString port, int baudrate)
 #endif
 }
 
-QList<VSerialInfo_t> VescInterface::listSerialPorts()
+QVariantList VescInterface::listSerialPorts()
 {
-    QList<VSerialInfo_t> res;
+    QVariantList res;
 
 #ifdef HAS_SERIALPORT
     QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
@@ -2305,7 +2400,8 @@ QList<VSerialInfo_t> VescInterface::listSerialPorts()
         info.systemPath = port.systemLocation();
         int index = res.size();
 
-        if(port.manufacturer().startsWith("STMicroelectronics")) {
+        //qDebug() << port.portName()  << ":  " << port.manufacturer() << "  " << port.productIdentifier();
+        if (port.manufacturer().startsWith("STMicroelectronics") || port.productIdentifier() == 22336) {
             info.name.insert(0, "VESC - ");
             info.isVesc = true;
             index = 0;
@@ -2313,7 +2409,13 @@ QList<VSerialInfo_t> VescInterface::listSerialPorts()
             info.isVesc = false;
         }
 
-        res.insert(index, info);
+        if (port.productIdentifier() == 0x1001) {
+            info.name.insert(0, "ESP32 - ");
+            info.isEsp = true;
+            index = 0;
+        }
+
+        res.insert(index, QVariant::fromValue(info));
     }
 #endif
 
@@ -2430,6 +2532,8 @@ void VescInterface::connectTcp(QString server, int port)
 {
     mLastTcpServer = server;
     mLastTcpPort = port;
+    mLastTcpHubVescID = "";
+    mLastTcpHubVescPass = "";
 
     QHostAddress host;
     host.setAddress(server);
@@ -2444,7 +2548,30 @@ void VescInterface::connectTcp(QString server, int port)
     }
 
     mTcpSocket->abort();
-    mTcpSocket->connectToHost(host, port);
+    mTcpSocket->connectToHost(host,port);
+}
+
+void VescInterface::connectTcpHub(QString server, int port, QString id, QString pass)
+{
+    mLastTcpHubServer = server;
+    mLastTcpHubPort = port;
+    mLastTcpHubVescID = id;
+    mLastTcpHubVescPass = pass;
+
+    QHostAddress host;
+    host.setAddress(server);
+
+    // Try DNS lookup
+    if (host.isNull()) {
+        QList<QHostAddress> addresses = QHostInfo::fromName(server).addresses();
+
+        if (!addresses.isEmpty()) {
+            host.setAddress(addresses.first().toString());
+        }
+    }
+
+    mTcpSocket->abort();
+    mTcpSocket->connectToHost(host,port);
 }
 
 void VescInterface::connectUdp(QString server, int port)
@@ -2536,6 +2663,8 @@ QVector<int> VescInterface::scanCan()
         return canDevs;
     }
 
+    canTmpOverride(false, 0);
+
     QEventLoop loop;
 
     bool timeout;
@@ -2558,6 +2687,8 @@ QVector<int> VescInterface::scanCan()
     } else {
         canDevs.clear();
     }
+
+    canTmpOverrideEnd();
 
     return canDevs;
 }
@@ -2653,6 +2784,24 @@ bool VescInterface::tcpServerIsClientConnected()
 QString VescInterface::tcpServerClientIp()
 {
     return mTcpServer->getConnectedClientIp();
+}
+
+bool VescInterface::tcpServerConnectToHub(QString server, int port, QString id, QString pass)
+{
+    bool res = mTcpServer->connectToHub(server, port, id, pass);
+
+    if (res) {
+        mLastTcpHubServer = server;
+        mLastTcpHubPort = port;
+        mLastTcpHubVescID = id;
+        mLastTcpHubVescPass = pass;
+    } else {
+        emitMessageDialog("Connecto to Hub",
+                          "Could not connect to hub",
+                          false, false);
+    }
+
+    return res;
 }
 
 bool VescInterface::udpServerStart(int port)
@@ -2843,9 +2992,41 @@ void VescInterface::tcpInputConnected()
 {
     mTcpSocket->setSocketOption(QAbstractSocket::LowDelayOption, true);
 
-    mSettings.setValue("tcp_server", mLastTcpServer);
-    mSettings.setValue("tcp_port", mLastTcpPort);
-    setLastConnectionType(CONN_TCP);
+    if (!mLastTcpHubVescID.isEmpty()) {
+        QString login = QString("VESCTOOL:%1:%2\n").arg(mLastTcpHubVescID).arg(mLastTcpHubVescPass);
+        mTcpSocket->write(login.toLocal8Bit());
+
+        mSettings.setValue("tcp_hub_server", mLastTcpHubServer);
+        mSettings.setValue("tcp_hub_port", mLastTcpHubPort);
+        mSettings.setValue("tcp_hub_vesc_id", mLastTcpHubVescID);
+        mSettings.setValue("tcp_hub_vesc_pass", mLastTcpHubVescPass);
+        setLastConnectionType(CONN_TCP_HUB);
+
+        TCP_HUB_DEVICE devNow;
+        devNow.server = mLastTcpHubServer;
+        devNow.port = mLastTcpHubPort;
+        devNow.id = mLastTcpHubVescID;
+        devNow.password = mLastTcpHubVescPass;
+
+        bool found = false;
+        for (const auto &i: qAsConst(mTcpHubDevs)) {
+            auto dev = i.value<TCP_HUB_DEVICE>();
+            if (dev.uuid() == devNow.uuid()) {
+                found = true;
+                updateTcpHubPassword(dev.uuid(), mLastTcpHubVescPass);
+                break;
+            }
+        }
+
+        if (!found) {
+            mTcpHubDevs.append(QVariant::fromValue(devNow));
+            storeSettings();
+        }
+    } else {
+        mSettings.setValue("tcp_server", mLastTcpServer);
+        mSettings.setValue("tcp_port", mLastTcpPort);
+        setLastConnectionType(CONN_TCP);
+    }
 
     mTcpConnected = true;
     updateFwRx(false);
@@ -3503,7 +3684,7 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
         for (int i = 0;i < params.customConfigNum;i++) {
             QByteArray configData;
             int confIndLast = 0;
-            int lenConfLast = 0;
+            int lenConfLast = -1;
             auto conn = connect(mCommands, &Commands::customConfigChunkRx,
                     [&](int confInd, int lenConf, int ofsConf, QByteArray data) {
                 if (configData.size() <= ofsConf) {
@@ -3566,12 +3747,13 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
         mCustomConfigsLoaded = readConfigsOk;
     }
 
+    mCustomConfigRxDone = true;
     emit customConfigLoadDone();
 
     // Read qmlui
     if (mLoadQmlUiOnConnect && params.hasQmlHw) {
         QByteArray qmlData;
-        int lenQmlLast = 0;
+        int lenQmlLast = -1;
         auto conn = connect(mCommands, &Commands::qmluiHwRx,
                             [&](int lenQml, int ofsQml, QByteArray data) {
             if (qmlData.size() <= ofsQml) {
@@ -3619,7 +3801,7 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
 
     if (mLoadQmlUiOnConnect && params.hasQmlApp) {
         QByteArray qmlData;
-        int lenQmlLast = 0;
+        int lenQmlLast = -1;
         auto conn = connect(mCommands, &Commands::qmluiAppRx,
                             [&](int lenQml, int ofsQml, QByteArray data) {
             if (qmlData.size() <= ofsQml) {
@@ -3668,6 +3850,10 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
     if (params.hasQmlApp || params.hasQmlHw) {
         emit qmlLoadDone();
     }
+
+    for (int i = 0;i < mCustomConfigs.size();i++) {
+        commands()->customConfigGet(i, false);
+    }
 }
 
 void VescInterface::appconfUpdated()
@@ -3702,6 +3888,79 @@ void VescInterface::ackReceived(QString ackType)
     emit statusMessage(ackType, true);
 }
 
+void VescInterface::customConfigRx(int confId, QByteArray data)
+{
+    ConfigParams *params = customConfig(confId);
+    if (params) {
+        auto vb = VByteArray(data);
+        if (params->deSerialize(vb)) {
+            params->updateDone();
+            emitStatusMessage(tr("Custom config %1 updated").arg(confId), true);
+        } else {
+            emitMessageDialog(tr("Custom Configuration"),
+                              tr("Could not deserialize custom config %1").arg(confId),
+                              false, false);
+        }
+    }
+}
+
+int VescInterface::getLastTcpHubPort() const
+{
+    return mLastTcpHubPort;
+}
+
+QVariantList VescInterface::getTcpHubDevs()
+{
+    return mTcpHubDevs;
+}
+
+void VescInterface::clearTcpHubDevs()
+{
+    mTcpHubDevs.clear();
+}
+
+bool VescInterface::updateTcpHubPassword(QString uuid, QString newPass)
+{
+    for (int i = 0;i < mTcpHubDevs.size();i++) {
+        auto dev = mTcpHubDevs.at(i).value<TCP_HUB_DEVICE>();
+        if (dev.uuid() == uuid) {
+            dev.password = newPass;
+            mTcpHubDevs[i] = QVariant::fromValue(dev);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool VescInterface::connectTcpHubUuid(QString uuid)
+{
+    for (const auto &i: qAsConst(mTcpHubDevs)) {
+        auto dev = i.value<TCP_HUB_DEVICE>();
+        if (dev.uuid() == uuid) {
+            connectTcpHub(dev.server, dev.port, dev.id, dev.password);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+QString VescInterface::getLastTcpHubServer() const
+{
+    return mLastTcpHubServer;
+}
+
+QString VescInterface::getLastTcpHubVescPass() const
+{
+    return mLastTcpHubVescPass;
+}
+
+QString VescInterface::getLastTcpHubVescID() const
+{
+    return mLastTcpHubVescID;
+}
+
 bool VescInterface::getFwSupportsConfiguration() const
 {
     return mFwSupportsConfiguration;
@@ -3731,11 +3990,19 @@ bool VescInterface::confStoreBackup(bool can, QString name)
 
         ConfigParams *pMc = mcConfig();
         ConfigParams *pApp = appConfig();
+        ConfigParams *pCustom = customConfig(0);
 
         commands()->getMcconf();
         bool rxMc = Utility::waitSignal(pMc, SIGNAL(updated()), 1500);
         commands()->getAppConf();
         bool rxApp = Utility::waitSignal(pApp, SIGNAL(updated()), 1500);
+
+        bool rxCustom = false;
+        if (pCustom != nullptr) {
+            commands()->customConfigGet(0, false);
+            rxCustom = Utility::waitSignal(pCustom, SIGNAL(updated()), 1500);
+            qDebug() << rxCustom;
+        }
 
         if (rxMc && rxApp) {
             CONFIG_BACKUP cfg;
@@ -3743,6 +4010,11 @@ bool VescInterface::confStoreBackup(bool can, QString name)
             cfg.vesc_uuid = uuid;
             cfg.mcconf_xml_compressed = pMc->saveCompressed("mcconf");
             cfg.appconf_xml_compressed = pApp->saveCompressed("appconf");
+
+            if (rxCustom) {
+                cfg.customconf_xml_compressed = pCustom->saveCompressed("customconf");
+            }
+
             mConfigurationBackups.insert(uuid, cfg);
             return true;
         } else {
@@ -3762,13 +4034,17 @@ bool VescInterface::confStoreBackup(bool can, QString name)
         commands()->setSendCan(false);
     }
 
-    res = storeConf();
+    FW_RX_PARAMS fwp;
+    Utility::getFwVersionBlocking(this, &fwp);
+
+    if (fwp.hwType == HW_TYPE_VESC) {
+        res = storeConf();
+    }
 
     if (res && can) {
         for (int d: scanCan()) {
             commands()->setSendCan(true, d);
 
-            FW_RX_PARAMS fwp;
             Utility::getFwVersionBlocking(this, &fwp);
 
             if (fwp.hwType == HW_TYPE_VESC) {
@@ -3827,26 +4103,42 @@ bool VescInterface::confRestoreBackup(bool can)
 
         ConfigParams *pMc = mcConfig();
         ConfigParams *pApp = appConfig();
+        ConfigParams *pCustom = customConfig(0);
 
         commands()->getMcconf();
         bool rxMc = Utility::waitSignal(pMc, SIGNAL(updated()), 2000);
         commands()->getAppConf();
         bool rxApp = Utility::waitSignal(pApp, SIGNAL(updated()), 2000);
 
+        bool rxCustom = false;
+        if (pCustom != nullptr) {
+            commands()->customConfigGet(0, false);
+            rxCustom = Utility::waitSignal(pCustom, SIGNAL(updated()), 2000);
+        }
+
         if (rxMc && rxApp) {
             if (mConfigurationBackups.contains(uuid)) {
                 pMc->loadCompressed(mConfigurationBackups[uuid].mcconf_xml_compressed, "mcconf");
                 pApp->loadCompressed(mConfigurationBackups[uuid].appconf_xml_compressed, "appconf");
 
+                if (rxCustom) {
+                    pCustom->loadCompressed(mConfigurationBackups[uuid].customconf_xml_compressed, "customconf");
+                }
+
                 // Try a few times, as BLE seems to drop the response sometimes.
-                bool txMc = false, txApp = false;
+                bool txMc = false, txApp = false, txCustom = true;;
                 for (int i = 0;i < 2;i++) {
                     commands()->setMcconf(false);
                     txMc = Utility::waitSignal(commands(), SIGNAL(ackReceived(QString)), 2000);
                     commands()->setAppConf();
                     txApp = Utility::waitSignal(commands(), SIGNAL(ackReceived(QString)), 2000);
 
-                    if (txApp && txMc) {
+                    if (rxCustom) {
+                        commands()->customConfigSet(0, pCustom);
+                        txCustom = Utility::waitSignal(commands(), SIGNAL(ackReceived(QString)), 2000);
+                    }
+
+                    if (txApp && txMc && txCustom) {
                         break;
                     }
                 }
@@ -3861,6 +4153,11 @@ bool VescInterface::confRestoreBackup(bool can)
                 if (!txApp) {
                     emitMessageDialog("Restore Configuration",
                                       "No response when writing app configuration to " + uuid + ".", false, false);
+                }
+
+                if (!txCustom) {
+                    emitMessageDialog("Restore Configuration",
+                                      "No response when writing" + pCustom->getParam("hw_name")->longName + "configuration to " + uuid + ".", false, false);
                 }
 
                 return txMc && txApp;
@@ -3885,13 +4182,17 @@ bool VescInterface::confRestoreBackup(bool can)
         commands()->setSendCan(false);
     }
 
-    res = restoreConf();
+    FW_RX_PARAMS fwp;
+    Utility::getFwVersionBlocking(this, &fwp);
+
+    if (fwp.hwType == HW_TYPE_VESC) {
+        res = restoreConf();
+    }
 
     if (res && can) {
         for (int d: scanCan()) {
             commands()->setSendCan(true, d);
 
-            FW_RX_PARAMS fwp;
             Utility::getFwVersionBlocking(this, &fwp);
 
             if (fwp.hwType == HW_TYPE_VESC) {
@@ -4006,6 +4307,11 @@ bool VescInterface::customConfigsLoaded()
     return mCustomConfigsLoaded;
 }
 
+bool VescInterface::customConfigRxDone()
+{
+    return mCustomConfigRxDone;
+}
+
 ConfigParams *VescInterface::customConfig(int configNum)
 {
     if (customConfigsLoaded() && configNum < mCustomConfigs.size()) {
@@ -4045,6 +4351,7 @@ void VescInterface::updateFwRx(bool fwRx)
 
     if (!mFwVersionReceived) {
         mCustomConfigsLoaded = false;
+        mCustomConfigRxDone = false;
         mQmlHwLoaded = false;
         mQmlAppLoaded = false;
     }

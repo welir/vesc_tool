@@ -32,5 +32,10 @@
         <file>res/Lisp/Examples/m365_dash.lisp</file>
         <file>res/Lisp/Examples/ssd1306_oled_cube_native.lisp</file>
         <file>res/Lisp/Examples/ws2812_native.lisp</file>
+        <file>res/Lisp/Examples/plot_vesc_tool.lisp</file>
+        <file>res/Lisp/Examples/log_can.lisp</file>
+        <file>res/Lisp/Examples/crc16.lisp</file>
+        <file>res/Lisp/Examples/encoder_sincos_cal.lisp</file>
+        <file>res/Lisp/Examples/test_extensions.lisp</file>
     </qresource>
 </RCC>
