@@ -54,7 +54,6 @@
 #include "pages/pageappuart.h"
 #include "pages/pageappnunchuk.h"
 #include "pages/pageappnrf.h"
-#include "pages/pageappbalance.h"
 #include "pages/pageapppas.h"
 #include "pages/pagegpd.h"
 #include "pages/pageexperiments.h"
@@ -70,6 +69,7 @@
 #include "pages/pagelisp.h"
 #include "pages/pageespprog.h"
 #include "pages/pagevescpackage.h"
+#include "pages/pagedisplaytool.h"
 
 namespace Ui {
 class MainWindow;
@@ -83,6 +83,7 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
     bool eventFilter(QObject *object, QEvent *e);
+    void closeEvent(QCloseEvent *event);
 
 private slots:
     void timerSlotDebugMsg();
@@ -98,6 +99,7 @@ private slots:
     void on_actionReconnect_triggered();
     void on_actionDisconnect_triggered();
     void on_actionReboot_triggered();
+    void on_actionShutdown_triggered();
     void on_stopButton_clicked();
     void on_fullBrakeButton_clicked();
     void on_actionReadMcconf_triggered();
@@ -111,6 +113,10 @@ private slots:
     void on_actionSaveAppconfXml_triggered();
     void on_actionLoadAppconfXml_triggered();
     void on_actionExit_triggered();
+    #ifndef Q_OS_IOS
+    void on_actionLaunchBoardConfigurator_triggered();
+    void on_actionLaunchMobileTool_triggered();
+    #endif
     void on_actionAbout_triggered();
     void on_actionLibrariesUsed_triggered();
     void on_dutyButton_clicked();
@@ -205,7 +211,6 @@ private:
     PageAppUart *mPageAppUart;
     PageAppNunchuk *mPageAppNunchuk;
     PageAppNrf *mPageAppNrf;
-    PageAppBalance *mPageAppBalance;
     PageCanAnalyzer *mPageCanAnalyzer;
     PageTerminal *mPageTerminal;
     PageAppPas *mPageAppPas;
@@ -219,7 +224,7 @@ private:
     PageScripting *mPageScripting;
     PageLisp *mPageLisp;
     PageEspProg *mPageEspProg;
-    QTabWidget *mPageVESCDev;
+    PageDisplayTool *mPageDisplayTool;
     Preferences *mPreferences;
 
     void addPageItem(QString name,

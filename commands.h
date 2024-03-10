@@ -81,6 +81,7 @@ public:
     Q_INVOKABLE bool fileBlockMkdir(QString path);
     Q_INVOKABLE bool fileBlockRemove(QString path);
     Q_INVOKABLE void fileBlockCancel();
+    Q_INVOKABLE bool fileBlockDidCancel();
 
     Q_INVOKABLE double getFilePercentage() const;
     Q_INVOKABLE double getFileSpeed() const;
@@ -102,7 +103,6 @@ signals:
     void decodedPpmReceived(double value, double last_len);
     void decodedAdcReceived(double value, double voltage, double value2, double voltage2);
     void decodedChukReceived(double value);
-    void decodedBalanceReceived(BALANCE_VALUES values);
     void motorRLReceived(double r, double l, double ld_lq_diff);
     void motorLinkageReceived(double flux_linkage);
     void encoderParamReceived(ENCODER_DETECT_RES res);
@@ -111,6 +111,7 @@ signals:
     void focHallTableReceived(QVector<int> hall_table, int res);
     void nrfPairingRes(int res);
     void mcConfigCheckResult(QStringList paramsNotSet);
+    void mcConfigWriteSent(bool checkSet);
     void gpdBufferNotifyReceived();
     void gpdBufferSizeLeftReceived(int sizeLeft);
     void valuesSetupReceived(SETUP_VALUES values, unsigned int mask);
@@ -134,6 +135,7 @@ signals:
     void bmsValuesRx(BMS_VALUES val);
     void customConfigChunkRx(int confInd, int lenConf, int ofsConf, QByteArray data);
     void customConfigRx(int confInd, QByteArray data);
+    void customConfigAckReceived(int confId);
     void pswStatusRx(PSW_STATUS stat);
     void qmluiHwRx(int lenQml, int ofsQml, QByteArray data);
     void qmluiAppRx(int lenQml, int ofsQml, QByteArray data);
@@ -191,11 +193,11 @@ public slots:
     void setAppConfNoStore();
     void detectMotorParam(double current, double min_rpm, double low_duty);
     void reboot();
+    void shutdown();
     void sendAlive();
     void getDecodedPpm();
     void getDecodedAdc();
     void getDecodedChuk();
-    void getDecodedBalance();
     void setServoPos(double pos);
     void measureRL();
     void measureLinkage(double current, double min_rpm, double low_duty, double resistance);
@@ -256,7 +258,7 @@ public slots:
 
     void qmlUiHwGet(int len, int offset);
     void qmlUiAppGet(int len, int offset);
-    void qmlUiErase();
+    void qmlUiErase(int size);
     void qmlUiWrite(QByteArray data, quint32 offset);
 
     void ioBoardGetAll(int id);
@@ -271,9 +273,9 @@ public slots:
     void lispReadCode(int len, int offset);
     void lispWriteCode(QByteArray data, quint32 offset);
     void lispStreamCode(QByteArray data, quint32 offset, quint32 totLen, qint8 mode);
-    void lispEraseCode();
+    void lispEraseCode(int size);
     void lispSetRunning(bool running);
-    void lispGetStats();
+    void lispGetStats(bool all);
     void lispSendReplCmd(QString str);
 
     void setBleName(QString name);
@@ -316,7 +318,6 @@ private:
     int mTimeoutDecPpm;
     int mTimeoutDecAdc;
     int mTimeoutDecChuk;
-    int mTimeoutDecBalance;
     int mTimeoutPingCan;
     int mTimeoutCustomConf;
     int mTimeoutBmsVal;

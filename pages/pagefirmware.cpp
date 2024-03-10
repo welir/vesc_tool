@@ -25,11 +25,6 @@
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QDirIterator>
-#include <QNetworkAccessManager>
-#include <QUrl>
-#include <QNetworkRequest>
-#include <QNetworkReply>
-#include <QEventLoop>
 
 PageFirmware::PageFirmware(QWidget *parent) :
     QWidget(parent),
@@ -40,17 +35,16 @@ PageFirmware::PageFirmware(QWidget *parent) :
     ui->cancelButton->setEnabled(false);
     mVesc = nullptr;
 
-    QString theme = Utility::getThemePath();
-    ui->changelogButton->setIcon(QPixmap(theme + "icons/About-96.png"));
-    ui->chooseButton->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->choose2Button->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->choose3Button->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->choose4Button->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->cancelButton->setIcon(QPixmap(theme + "icons/Cancel-96.png"));
-    ui->uploadButton->setIcon(QPixmap(theme + "icons/Download-96.png"));
-    ui->uploadAllButton->setIcon(QPixmap(theme + "icons/Download-96.png"));
-    ui->readVersionButton->setIcon(QPixmap(theme + "icons/Upload-96.png"));
-    ui->dlArchiveButton->setIcon(QPixmap(theme + "icons/Download-96.png"));
+    ui->changelogButton->setIcon(Utility::getIcon("icons/About-96.png"));
+    ui->chooseButton->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->choose2Button->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->choose3Button->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->choose4Button->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->cancelButton->setIcon(Utility::getIcon("icons/Cancel-96.png"));
+    ui->uploadButton->setIcon(Utility::getIcon("icons/Download-96.png"));
+    ui->uploadAllButton->setIcon(Utility::getIcon("icons/Download-96.png"));
+    ui->readVersionButton->setIcon(Utility::getIcon("icons/Upload-96.png"));
+    ui->dlArchiveButton->setIcon(Utility::getIcon("icons/Download-96.png"));
 
     updateHwList(FW_RX_PARAMS());
     updateBlList(FW_RX_PARAMS());
@@ -105,6 +99,11 @@ void PageFirmware::setVesc(VescInterface *vesc)
                 this, SLOT(fwUploadStatus(QString,double,bool)));
         connect(mVesc, SIGNAL(fwRxChanged(bool,bool)),
                 this, SLOT(fwRxChanged(bool,bool)));
+
+        connect(mVesc, &VescInterface::fwArchiveDlProgress, [this](QString msg, double prog) {
+            ui->displayDl->setText(msg);
+            ui->displayDl->setValue(100.0 * prog);
+        });
     }
 }
 
@@ -245,6 +244,10 @@ void PageFirmware::updateHwList(FW_RX_PARAMS params)
     QString extraPath;
     if (params.hw == "VESC Express T") {
         extraPath = "://res/firmwares_esp/ESP32-C3/VESC Express";
+    } else if (params.hw == "Devkit C3") {
+        extraPath = "://res/firmwares_esp/ESP32-C3/DevKitM-1";
+    } else if (params.hw == "STR-DCDC") {
+        extraPath = "://res/firmwares_custom_module/str-dcdc";
     }
 
     if (!extraPath.isEmpty()) {
@@ -273,7 +276,7 @@ void PageFirmware::updateFwList()
             QFileInfo fi(it.next());
             if (ui->showNonDefaultBox->isChecked() ||
                     fi.fileName().toLower() == "vesc_default.bin" ||
-                    fi.fileName().toLower() == "app.bin") {
+                    fi.fileName().toLower() == "vesc_express.bin") {
                 QListWidgetItem *item = new QListWidgetItem;
                 item->setText(fi.fileName());
                 item->setData(Qt::UserRole, fi.absoluteFilePath());
@@ -334,12 +337,34 @@ void PageFirmware::updateBlList(FW_RX_PARAMS params)
 {
     ui->blList->clear();
 
-    QString blDir;
-    if (params.hwType == HW_TYPE_VESC) {
+    QString blDir = "";
+    switch (params.hwType) {
+    case HW_TYPE_VESC:
         blDir = "://res/bootloaders";
-    } else if (params.hwType == HW_TYPE_VESC_BMS) {
+        break;
+
+    case HW_TYPE_VESC_BMS:
         blDir = "://res/bootloaders_bms";
-    } else {
+        break;
+
+    case HW_TYPE_CUSTOM_MODULE:
+        QByteArray endEsp;
+        endEsp.append('\0');
+        endEsp.append('\0');
+        endEsp.append('\0');
+        endEsp.append('\0');
+
+        if (!params.uuid.endsWith(endEsp)) {
+            if (params.hw == "hm1") {
+                blDir = "://res/bootloaders_bms";
+            } else {
+                blDir = "://res/bootloaders_custom_module/stm32g431";
+            }
+        }
+        break;
+    }
+
+    if (blDir.isEmpty()) {
         return;
     }
 
@@ -363,12 +388,24 @@ void PageFirmware::updateBlList(FW_RX_PARAMS params)
     }
 
     if (ui->blList->count() == 0) {
-        QFileInfo generic(blDir + "/generic.bin");
-        if (generic.exists()) {
-            QListWidgetItem *item = new QListWidgetItem;
-            item->setText("generic");
-            item->setData(Qt::UserRole, generic.absoluteFilePath());
-            ui->blList->insertItem(ui->blList->count(), item);
+        {
+            QFileInfo generic(blDir + "/generic.bin");
+            if (generic.exists()) {
+                QListWidgetItem *item = new QListWidgetItem;
+                item->setText("generic");
+                item->setData(Qt::UserRole, generic.absoluteFilePath());
+                ui->blList->insertItem(ui->blList->count(), item);
+            }
+        }
+
+        {
+            QFileInfo stm32g431(blDir + "/stm32g431.bin");
+            if (stm32g431.exists()) {
+                QListWidgetItem *item = new QListWidgetItem;
+                item->setText("stm32g431");
+                item->setData(Qt::UserRole, stm32g431.absoluteFilePath());
+                ui->blList->insertItem(ui->blList->count(), item);
+            }
         }
     }
 
@@ -659,8 +696,7 @@ void PageFirmware::uploadFw(bool allOverCan)
 
 void PageFirmware::reloadArchive()
 {
-    QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-            "/res_fw.rcc";
+    QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/res_fw.rcc";
     QFile file(path);
     if (file.exists()) {
         QResource::unregisterResource(path);
@@ -687,36 +723,11 @@ void PageFirmware::on_dlArchiveButton_clicked()
     ui->dlArchiveButton->setEnabled(false);
     ui->displayDl->setText("Preparing download...");
 
-    QUrl url("http://home.vedder.se/vesc_fw_archive/res_fw.rcc");
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    QNetworkReply *reply = manager.get(request);
-
-    connect(reply, &QNetworkReply::downloadProgress, [this](qint64 bytesReceived, qint64 bytesTotal) {
-        ui->displayDl->setText("Downloading...");
-        ui->displayDl->setValue(100.0 * (double)bytesReceived / (double)bytesTotal);
-    });
-
-    QEventLoop loop;
-    connect(reply, SIGNAL(finished()), &loop, SLOT(quit()));
-    loop.exec();
-
-    if (reply->error() == QNetworkReply::NoError) {
-        ui->displayDl->setText("Download Finished");
-        QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-                "/res_fw.rcc";
-        QFile file(path);
-        if (file.open(QIODevice::WriteOnly)) {
-            file.write(reply->readAll());
-            file.close();
+    if (mVesc) {
+        if (mVesc->downloadFwArchive()) {
             reloadArchive();
         }
-    } else {
-        ui->displayDl->setText("Download Failed");
     }
-
-    reply->abort();
-    reply->deleteLater();
 
     ui->dlArchiveButton->setEnabled(true);
 }

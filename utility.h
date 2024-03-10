@@ -35,6 +35,9 @@
 #define SIGN(x)         ((x < 0) ? -1 : 1)
 #define SQ(x)           ((x) * (x))
 
+#define STR1(x)         #x
+#define STR(x)          STR1(x)
+
 class Utility : public QObject
 {
     Q_OBJECT
@@ -69,7 +72,7 @@ public:
     Q_INVOKABLE static bool waitMotorStop(VescInterface *vesc, double erpmTres, int timeoutMs);
     Q_INVOKABLE static bool resetInputCan(VescInterface *vesc, QVector<int> canIds);
     Q_INVOKABLE static bool setBatteryCutCan(VescInterface *vesc, QVector<int> canIds, double cutStart, double cutEnd);
-    Q_INVOKABLE static bool setBatteryCutCanFromCurrentConfig(VescInterface *vesc, QVector<int> canIds);
+    Q_INVOKABLE static bool setBatteryCutCanFromCurrentConfig(VescInterface *vesc, QVector<int> canIds, bool cautious);
     Q_INVOKABLE static bool setMcParamsFromCurrentConfigAllCan(VescInterface *vesc, QVector<int> canIds, QStringList params);
     Q_INVOKABLE static bool setInvertDirection(VescInterface *vesc, int canId, bool inverted);
     Q_INVOKABLE static bool getInvertDirection(VescInterface *vesc, int canId);
@@ -136,6 +139,12 @@ public:
     };
 
     static QString waitForLine(QTcpSocket *socket, int timeoutMs);
+
+    static QPixmap getIcon(QString path);
+
+    Q_INVOKABLE static bool downloadUrlEventloop(QString path, QString dest);
+
+    Q_INVOKABLE static QString md2html(QString md);
 
 signals:
 

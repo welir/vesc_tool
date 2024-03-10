@@ -34,21 +34,23 @@ public:
     VescInterface *vesc() const;
     Q_INVOKABLE void setVesc(VescInterface *vesc);
 
-    Q_INVOKABLE bool lispErase();
+    Q_INVOKABLE bool lispErase(int size);
     QByteArray lispPackImports(QString codeStr, QString editorPath = QDir::currentPath());
     QPair<QString, QList<QPair<QString, QByteArray> > > lispUnpackImports(QByteArray data);
     bool lispUpload(VByteArray vb);
     bool lispUpload(QString codeStr, QString editorPath = QDir::currentPath());
     bool lispStream(VByteArray vb, qint8 mode);
-    QString lispRead(QWidget *parent = nullptr);
+    QString lispRead(QWidget *parent, QString &lispPath);
 
-    Q_INVOKABLE bool qmlErase();
-    bool qmlUpload(QString script, bool isFullscreen);
+    Q_INVOKABLE bool qmlErase(int size);
+    QByteArray qmlCompress(QString script);
+    bool qmlUpload(QByteArray scripr, bool isFullscreen);
 
     QByteArray packVescPackage(VescPackage pkg);
     VescPackage unpackVescPackage(QByteArray data);
     bool installVescPackage(VescPackage pkg);
     Q_INVOKABLE bool installVescPackage(QByteArray data);
+    Q_INVOKABLE bool installVescPackageFromPath(QString path);
 
     Q_INVOKABLE QVariantList reloadPackageArchive();
     Q_INVOKABLE bool downloadPackageArchive();
@@ -58,6 +60,7 @@ signals:
 
 private:
     VescInterface *mVesc;
+    bool getImportFromLine(QString line, QString &path, QString &tag, bool &isInvalid);
 
 };
 

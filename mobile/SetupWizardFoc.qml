@@ -69,10 +69,14 @@ Item {
 
     function updateUsageListParams() {
         mMcConf.updateParamDouble("l_duty_start", usageList.currentItem.modelData.duty_start, null)
+        mMcConf.updateParamInt("m_fault_stop_time_ms", usageList.currentItem.modelData.fault_stop_ms, null)
+        mMcConf.updateParamInt("bms.limit_mode", usageList.currentItem.modelData.bms_limit_mode, null)
     }
 
     Component.onCompleted: {
+        paramListUsage.addEditorMc("bms.limit_mode")
         paramListUsage.addEditorMc("l_duty_start")
+        paramListUsage.addEditorMc("m_fault_stop_time_ms")
 
         paramListBatt.addEditorMc("si_battery_type")
         paramListBatt.addEditorMc("si_battery_cells")
@@ -81,6 +85,8 @@ Item {
         paramListSetup.addEditorMc("si_wheel_diameter")
         paramListSetup.addSeparator("↓ Only change if needed ↓")
         paramListSetup.addEditorMc("si_motor_poles")
+        paramListSetup.addEditorMc("m_motor_temp_sens_type")
+        paramListSetup.addEditorMc("m_ntc_motor_beta")
     }
 
     Dialog {
@@ -111,10 +117,18 @@ Item {
                     id: usageModel
                     property string iconPath: {iconPath = "qrc" + Utility.getThemePath() + "icons/"}
                     Component.onCompleted: {
-                        append({name: "Generic", usageImg:iconPath + "motor.png", duty_start: 1.0, hfi_start: false})
-                        append({name: "E-Skate", usageImg:"qrc:/res/images/esk8.jpg", duty_start: 0.85, hfi_start: true})
-                        append({name: "EUC", usageImg:iconPath + "EUC-96.png", duty_start: 1.0, hfi_start: false})
-                        append({name: "Propeller", usageImg:"qrc:/res/images/propeller.jpg", duty_start: 1.0, hfi_start: false})
+                        append({name: "Generic", usageImg:iconPath + "motor.png",
+                                   duty_start: 1.0, hfi_start: false, fault_stop_ms: 500,
+                                   bms_limit_mode: 3, batt_cut_cautious: true})
+                        append({name: "E-Skate", usageImg:"qrc:/res/images/esk8.jpg",
+                                   duty_start: 0.85, hfi_start: true, fault_stop_ms: 50,
+                                   bms_limit_mode: 3, batt_cut_cautious: true})
+                        append({name: "Balance", usageImg:iconPath + "EUC-96.png",
+                                   duty_start: 1.0, hfi_start: false, fault_stop_ms: 50,
+                                   bms_limit_mode: 0, batt_cut_cautious: false})
+                        append({name: "Propeller", usageImg:"qrc:/res/images/propeller.jpg",
+                                   duty_start: 1.0, hfi_start: false, fault_stop_ms: 500,
+                                   bms_limit_mode: 3, batt_cut_cautious: true})
                     }
                 }
 
@@ -207,10 +221,11 @@ Item {
                     }
 
                     GroupBox {
-                        Layout.preferredHeight: implicitHeight
+                        Layout.preferredHeight: dialog.isHorizontal ? implicitHeight : parent.height * 0.5
                         Layout.fillWidth: true
                         Layout.column: 0
                         Layout.row: dialog.isHorizontal ? 0 : 1
+                        Layout.alignment: Qt.AlignTop
                         contentWidth: dialog.isHorizontal ? parent.width/2 : parent.width
 
                         label: CheckBox {
@@ -902,6 +917,8 @@ Item {
                     return
                 }
 
+                Utility.setMcParamsFromCurrentConfigAllCan(VescIf, canDevs, ["m_motor_temp_sens_type", "m_ntc_motor_beta"])
+
                 var res  = Utility.detectAllFoc(VescIf, detectCanBox.checked,
                                                 maxPowerLossBox.realValue,
                                                 currentInMinBox.realValue,
@@ -913,7 +930,7 @@ Item {
                 if (res.startsWith("Success!")) {
                     resDetect = true
 
-                    Utility.setBatteryCutCanFromCurrentConfig(VescIf, canDevs)
+                    Utility.setBatteryCutCanFromCurrentConfig(VescIf, canDevs, usageList.currentItem.modelData.batt_cut_cautious)
 
                     var updateAllParams = ["l_duty_start"]
 

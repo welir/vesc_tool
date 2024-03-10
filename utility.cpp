@@ -36,7 +36,9 @@
 #include <QtGlobal>
 #include <QNetworkInterface>
 #include <QDirIterator>
+#include <QPixmapCache>
 
+#include "maddy/parser.h"
 
 #ifdef Q_OS_ANDROID
 #include <QtAndroid>
@@ -206,7 +208,7 @@ void Utility::checkVersion(VescInterface *vesc)
 
 QString Utility::fwChangeLog()
 {
-    QFile cl("://res/firmwares/CHANGELOG");
+    QFile cl("://res/firmwares/CHANGELOG.md");
     if (cl.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return QString::fromUtf8(cl.readAll());
     } else {
@@ -216,7 +218,7 @@ QString Utility::fwChangeLog()
 
 QString Utility::vescToolChangeLog()
 {
-    QFile cl("://res/CHANGELOG");
+    QFile cl("://res/CHANGELOG.md");
     if (cl.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return QString::fromUtf8(cl.readAll());
     } else {
@@ -230,6 +232,7 @@ QString Utility::aboutText()
           #if VT_IS_TEST_VERSION
               "Test Version %2<br>"
           #endif
+              "GIT Commit " STR(VT_GIT_COMMIT) "<br>"
           #if defined(VER_ORIGINAL)
               "Original Version<br>"
           #elif defined(VER_PLATINUM)
@@ -243,10 +246,10 @@ QString Utility::aboutText()
           #elif defined(VER_FREE)
               "Free of Charge Version<br>"
           #endif
-              "&copy; Benjamin Vedder 2016 - 2022<br>"
+              "&copy; Benjamin Vedder 2016 - 2024<br>"
               "<a href=\"mailto:benjamin@vedder.se\">benjamin@vedder.se</a><br>"
-              "<a href=\"https://vesc-project.com/\">https://vesc-project.com/</a>").
-            arg(QString::number(VT_VERSION, 'f', 2))
+              "<a href=\"https://vesc-project.com/\">https://vesc-project.com/</a>")
+            .arg(QString::number(VT_VERSION, 'f', 2))
         #if VT_IS_TEST_VERSION
             .arg(QString::number(VT_IS_TEST_VERSION))
         #endif
@@ -567,14 +570,14 @@ QString Utility::detectAllFoc(VescInterface *vesc,
             case -100 + FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3: reason = "High offset on current sensor 3, check for hardware failure"; break;
             case -100 + FAULT_CODE_UNBALANCED_CURRENTS: reason = "Unbalanced currents, check for hardware failure"; break;
             case -100 + FAULT_CODE_BRK: reason = "BRK, hardware protection triggered, check for shorts or possible hardware failure"; break;
-            case -100 + FAULT_CODE_RESOLVER_LOT: reason = "?"; break;
-            case -100 + FAULT_CODE_RESOLVER_DOS: reason = "?"; break;
-            case -100 + FAULT_CODE_RESOLVER_LOS: reason = "?"; break;
+            case -100 + FAULT_CODE_RESOLVER_LOT: reason = "Encoder/Resolver: Loss of tracking"; break;
+            case -100 + FAULT_CODE_RESOLVER_DOS: reason = "Encoder/Resolver: Degradation of signal"; break;
+            case -100 + FAULT_CODE_RESOLVER_LOS: reason = "Encoder/Resolver: Loss of signal"; break;
             case -100 + FAULT_CODE_FLASH_CORRUPTION_APP_CFG: reason = "Flash corruption, App config corrupt, rewrite app config to restore"; break;
             case -100 + FAULT_CODE_FLASH_CORRUPTION_MC_CFG: reason = "Flash corruption, Motor config corrupt, rewrite motor config to restore"; break;
             case -100 + FAULT_CODE_ENCODER_NO_MAGNET: reason = "Encoder no magnet, magnet is too weak or too far from the encoder"; break;
             case -100 + FAULT_CODE_ENCODER_MAGNET_TOO_STRONG: reason = "Magnet too strong, magnet is too strong or too close to the encoder"; break;
-            case -100 + FAULT_CODE_PHASE_FILTER: reason = "Phase filter fault, ?"; break;
+            case -100 + FAULT_CODE_PHASE_FILTER: reason = "Phase filter fault, invalid phase filter readings"; break;
             case -100 + FAULT_CODE_ENCODER_FAULT: reason = "Encoder fault, check encoder connections and alignment"; break;
 
             default: reason = QString::number(resDetect); break;
@@ -798,7 +801,7 @@ bool Utility::setBatteryCutCan(VescInterface *vesc, QVector<int> canIds, double 
     return setMcParamsFromCurrentConfigAllCan(vesc, canIds, {"l_battery_cut_start", "l_battery_cut_end"});
 }
 
-bool Utility::setBatteryCutCanFromCurrentConfig(VescInterface *vesc, QVector<int> canIds)
+bool Utility::setBatteryCutCanFromCurrentConfig(VescInterface *vesc, QVector<int> canIds, bool cautious)
 {
     ConfigParams *p = vesc->mcConfig();
 
@@ -807,14 +810,26 @@ bool Utility::setBatteryCutCanFromCurrentConfig(VescInterface *vesc, QVector<int
     double start = -1.0;
     double end = -1.0;
 
-    if (battType == 0) {
-        start = 3.4;
-        end = 3.0;
-    } else if (battType == 1) {
-        start = 2.9;
-        end = 2.6;
+    if (cautious) {
+        if (battType == 0) {
+            start = 3.4;
+            end = 3.0;
+        } else if (battType == 1) {
+            start = 2.9;
+            end = 2.6;
+        } else {
+            return false;
+        }
     } else {
-        return false;
+        if (battType == 0) {
+            start = 2.7;
+            end = 2.5;
+        } else if (battType == 1) {
+            start = 2.5;
+            end = 2.2;
+        } else {
+            return false;
+        }
     }
 
     start *= (double)cells;
@@ -1413,7 +1428,7 @@ bool Utility::createCompressedConfigC(ConfigParams *params, QString configName, 
 
     outSource << "// This file is autogenerated by VESC Tool\n\n";
     outSource << "#include \"" << headerInfo.fileName() << "\"\n\n";
-    outSource << "uint8_t data_" << configNameStr << "[" << compressed.size() << "] = {\n\t";
+    outSource << "__attribute__((used)) uint8_t data_" << configNameStr << "[" << compressed.size() << "] = {\n\t";
 
     int posCnt = 0;
     for (auto b: compressed) {
@@ -1784,7 +1799,7 @@ QPair<int, int> Utility::configLatestSupported()
         QStringList names = fi.fileName().split("_o_");
 
         if (fi.isDir()) {
-            for(auto name: names) {
+            foreach (auto name, names) {
                 auto parts = name.split(".");
                 if (parts.size() == 2) {
                     QPair<int, int> ver = qMakePair(parts.at(0).toInt(), parts.at(1).toInt());
@@ -2250,6 +2265,7 @@ QString Utility::waitForLine(QTcpSocket *socket, int timeoutMs)
                 if (rxb[0] != '\n') {
                     rxLine.append(rxb[0]);
                 } else {
+                    rxLine.append('\0');
                     loop.quit();
                 }
             } else {
@@ -2271,6 +2287,64 @@ QString Utility::waitForLine(QTcpSocket *socket, int timeoutMs)
     return res;
 }
 
+QPixmap Utility::getIcon(QString path)
+{
+    while (path.startsWith("/")) {
+        path.remove(0, 1);
+    }
+
+    QPixmap pm;
+    if (!QPixmapCache::find(path, &pm)) {
+        pm.load(getThemePath() + path);
+        QPixmapCache::insert(path, pm);
+    }
+
+    return pm;
+}
+
+bool Utility::downloadUrlEventloop(QString path, QString dest)
+{
+    bool res = false;
+
+    QUrl url(path);
+
+    if (!url.isValid()) {
+        return res;
+    }
+
+    QNetworkAccessManager manager;
+    QNetworkRequest request(url);
+    QNetworkReply *reply = manager.get(request);
+
+    QEventLoop loop;
+    connect(reply, SIGNAL(finished()), &loop, SLOT(quit()));
+    loop.exec();
+
+    if (reply->error() == QNetworkReply::NoError) {
+        QFile file(dest);
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write(reply->readAll());
+            file.close();
+            res = true;
+        }
+    }
+
+    reply->abort();
+    reply->deleteLater();
+
+    return res;
+}
+
+QString Utility::md2html(QString md)
+{
+    std::shared_ptr<maddy::ParserConfig> config = std::make_shared<maddy::ParserConfig>();
+    config->enabledParsers = maddy::types::ALL;
+    std::shared_ptr<maddy::Parser> parser = std::make_shared<maddy::Parser>(config);
+
+    std::stringstream markdownInput(md.toStdString());
+    return QString::fromStdString(parser->Parse(markdownInput));
+}
+
 void Utility::setDarkMode(bool isDarkSetting)
 {
     isDark = isDarkSetting;
@@ -2283,7 +2357,7 @@ bool Utility::isDarkMode()
 
 QString Utility::getThemePath()
 {
-    if(isDark) {
+    if (isDark) {
         return ":/res/";
     } else {
         return ":/res/+theme_light/";

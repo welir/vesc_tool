@@ -1,4 +1,4 @@
-﻿/*
+/*
     Copyright 2016 - 2020 Benjamin Vedder	benjamin@vedder.se
 
     This file is part of VESC Tool.
@@ -36,6 +36,12 @@
 #ifdef HAS_SERIALPORT
 #include <QSerialPortInfo>
 #endif
+
+#include <QNetworkAccessManager>
+#include <QUrl>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QEventLoop>
 
 #ifdef HAS_CANBUS
 #include <QCanBus>
@@ -98,6 +104,8 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     mCanTmpFwdActive = false;
     mCanTmpFwdSendCanLast = false;
     mCanTmpFwdIdLast = -1;
+
+    mIgnoreCustomConfigs = false;
 
 #ifdef Q_OS_ANDROID
     QAndroidJniObject activity = QAndroidJniObject::callStaticObjectMethod(
@@ -322,6 +330,40 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     connect(mMcConfig, SIGNAL(updated()), this, SLOT(mcconfUpdated()));
     connect(mAppConfig, SIGNAL(updated()), this, SLOT(appconfUpdated()));
 
+    // Sanity-check motor parameters
+    connect(mCommands, &Commands::mcConfigWriteSent, [this](bool checkSet) {
+        if (!checkSet) {
+            return;
+        }
+
+        QString notes = "";
+
+        if ((mMcConfig->getParamDouble("l_current_max") * 1.3) > mMcConfig->getParamDouble("l_abs_current_max") ||
+                (fabs(mMcConfig->getParamDouble("l_current_min")) * 1.3) > mMcConfig->getParamDouble("l_abs_current_max")) {
+            notes += tr("<b>Current Checks</b><br>"
+                        "The absolute maximum current is set close to the maximum motor current. This can cause "
+                        "overcurrent faults and stop the motor when requesting high currents. Please check your configuration "
+                        "and make sure that it is correct. It is recommended to set the absolute maximum current to around 1.5 "
+                        "times the motor current (or braking current if it is higher).");
+        }
+
+        if (mMcConfig->getParamBool("l_slow_abs_current")) {
+            if (!notes.isEmpty()) {
+                notes.append("<br><br>");
+            }
+
+            notes += tr("<b>Limit Checks</b><br>"
+                        "Slow ABS Current Limit is set. This should generally not be done as it greatly increases the "
+                        "chance of permanently damaging the motor controller. Only change this setting if you know "
+                        "exactly what you are doing! In general ABS overcurrent faults indicate that something is "
+                        "wrong with the configuration or that the setup is pushed beyond reasonable limits.");
+        }
+
+        if (!notes.isEmpty()) {
+            emitMessageDialog(tr("Potential Configuration Issues"), notes, false, true);
+        }
+    });
+
     connect(mCommands, &Commands::valuesSetupReceived, [this](SETUP_VALUES v) {
         mLastSetupValues = v;
         mLastSetupTime = QDateTime::currentDateTimeUtc();
@@ -494,6 +536,17 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
 
     connect(mCommands, SIGNAL(customConfigRx(int,QByteArray)),
             this, SLOT(customConfigRx(int,QByteArray)));
+
+    connect(mCommands, &Commands::customConfigAckReceived, [this](int confId) {
+        ConfigParams *custConf = customConfig(confId);
+        QString name;
+        if (custConf) {
+            name = custConf->getLongName("hw_name");
+        } else {
+            name = tr("Custom config %1").arg(confId);
+        }
+        emit ackReceived(tr("%1 write OK").arg(name));
+    });
 
 #if VT_IS_TEST_VERSION
     QTimer::singleShot(1000, [this]() {
@@ -1226,7 +1279,7 @@ bool VescInterface::fwEraseNewApp(bool fwdCan, quint32 fwSize)
     };
 
     mCommands->eraseNewApp(fwdCan, fwSize, mLastFwParams.hwType, mLastFwParams.hw);
-    emit fwUploadStatus("Erasing buffer...", 0.0, true);
+    emit fwUploadStatus("Erasing buffer", 0.0, true);
     int erRes = waitEraseRes();
     if (erRes != 1) {
         QString msg = QString("Unknown failure: %1").arg(erRes);
@@ -1422,10 +1475,22 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
     int addr = 0;
 
     if (isBootloader) {
-        if (mLastFwParams.hwType != HW_TYPE_VESC) {
-            addr += 0x0803E000 - 0x08020000;
-        } else {
+        switch (mLastFwParams.hwType) {
+        case HW_TYPE_VESC:
             addr += (1024 * 128 * 3);
+            break;
+
+        case HW_TYPE_VESC_BMS:
+            addr += 0x0803E000 - 0x08020000;
+            break;
+
+        case HW_TYPE_CUSTOM_MODULE: {
+            if (mLastFwParams.hw == "hm1") {
+                addr += 0x0803E000 - 0x08020000;
+            } else {
+                addr += 0x0801E000 - 0x08010000;
+            }
+        } break;
         }
     }
 
@@ -1493,7 +1558,7 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
         QByteArray in = newFirmware.mid(0, sz);
 
         bool hasData = false;
-        for (auto b: in) {
+        foreach (auto b, in) {
             if (b != (char)0xff) {
                 hasData = true;
                 break;
@@ -2993,7 +3058,7 @@ void VescInterface::tcpInputConnected()
     mTcpSocket->setSocketOption(QAbstractSocket::LowDelayOption, true);
 
     if (!mLastTcpHubVescID.isEmpty()) {
-        QString login = QString("VESCTOOL:%1:%2\n").arg(mLastTcpHubVescID).arg(mLastTcpHubVescPass);
+        QString login = QString("VESCTOOL:%1:%2\n\0").arg(mLastTcpHubVescID).arg(mLastTcpHubVescPass);
         mTcpSocket->write(login.toLocal8Bit());
 
         mSettings.setValue("tcp_hub_server", mLastTcpHubServer);
@@ -3129,7 +3194,10 @@ void VescInterface::timerSlot()
                         emit statusMessage(tr("No firmware read response"), false);
                         emit messageDialog(tr("Read Firmware Version"),
                                            tr("Could not read firmware version. Make sure that "
-                                              "the selected port really belongs to the VESC. "),
+                                              "the selected port really belongs to the VESC. If "
+                                              "you are using UART, make sure that the port is enabled, "
+                                              "connected correctly (rx to tx and tx to rx) and uses "
+                                              "the correct baudrate"),
                                            false, false);
                         disconnectPort();
                     }
@@ -3544,9 +3612,43 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
         compCommands.append(int(COMM_CUSTOM_HW_DATA));
         compCommands.append(int(COMM_QMLUI_ERASE));
         compCommands.append(int(COMM_QMLUI_WRITE));
+        compCommands.append(int(COMM_IO_BOARD_GET_ALL));
+        compCommands.append(int(COMM_IO_BOARD_SET_PWM));
+        compCommands.append(int(COMM_IO_BOARD_SET_DIGITAL));
+        compCommands.append(int(COMM_BM_MEM_WRITE));
+        compCommands.append(int(COMM_BMS_BLNC_SELFTEST));
+        compCommands.append(int(COMM_GET_EXT_HUM_TMP));
+        compCommands.append(int(COMM_GET_STATS));
     }
 
-    if (fwPairs.contains(fw_connected) || Utility::configSupportedFws().contains(fw_connected)) {
+    if (fw_connected >= qMakePair(6, 00)) {
+        compCommands.append(int(COMM_RESET_STATS));
+        compCommands.append(int(COMM_LISP_READ_CODE));
+        compCommands.append(int(COMM_LISP_WRITE_CODE));
+        compCommands.append(int(COMM_LISP_ERASE_CODE));
+        compCommands.append(int(COMM_LISP_SET_RUNNING));
+        compCommands.append(int(COMM_LISP_GET_STATS));
+        compCommands.append(int(COMM_LISP_PRINT));
+        compCommands.append(int(COMM_BMS_SET_BATT_TYPE));
+        compCommands.append(int(COMM_BMS_GET_BATT_TYPE));
+        compCommands.append(int(COMM_LISP_REPL_CMD));
+        compCommands.append(int(COMM_LISP_STREAM_CODE));
+        compCommands.append(int(COMM_FILE_LIST));
+        compCommands.append(int(COMM_FILE_READ));
+        compCommands.append(int(COMM_FILE_WRITE));
+        compCommands.append(int(COMM_FILE_MKDIR));
+        compCommands.append(int(COMM_FILE_REMOVE));
+        compCommands.append(int(COMM_LOG_START));
+        compCommands.append(int(COMM_LOG_STOP));
+        compCommands.append(int(COMM_LOG_CONFIG_FIELD));
+        compCommands.append(int(COMM_LOG_DATA_F32));
+        compCommands.append(int(COMM_SET_APPCONF_NO_STORE));
+        compCommands.append(int(COMM_GET_GNSS));
+        compCommands.append(int(COMM_LOG_DATA_F64));
+    }
+
+    if (params.hwType == HW_TYPE_VESC &&
+            (fwPairs.contains(fw_connected) || Utility::configSupportedFws().contains(fw_connected))) {
         compCommands.append(int(COMM_SET_MCCONF));
         compCommands.append(int(COMM_GET_MCCONF));
         compCommands.append(int(COMM_GET_MCCONF_DEFAULT));
@@ -3608,10 +3710,12 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
                                            false, false);
                     }
                 } else {
-                    emit messageDialog(tr("Warning"), tr("The connected VESC has too old firmware. Since the"
-                                                         " connected VESC has firmware with bootloader support, it can be"
-                                                         " updated from the Firmware page."
-                                                         " Until then, limited communication mode will be used."), false, false);
+                    if (params.hwType == HW_TYPE_VESC) {
+                        emit messageDialog(tr("Warning"), tr("The connected VESC has too old firmware. Since the"
+                                                             " connected VESC has firmware with bootloader support, it can be"
+                                                             " updated from the Firmware page."
+                                                             " Until then, limited communication mode will be used."), false, false);
+                    }
                 }
             }
         } else {
@@ -3673,8 +3777,15 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
                           false, false);
     }
 
+    QString appDataLoc = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QString confCacheDir;
+    if (params.hwConfCrc > 0) {
+        confCacheDir = appDataLoc + "/hw_cache/" + QString::number(params.hwConfCrc);
+        QDir().mkpath(confCacheDir);
+    }
+
     // Read custom configs
-    if (params.customConfigNum > 0) {
+    if (!mIgnoreCustomConfigs && params.customConfigNum > 0) {
         while (!mCustomConfigs.isEmpty()) {
             mCustomConfigs.last()->deleteLater();
             mCustomConfigs.removeLast();
@@ -3682,6 +3793,35 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
 
         bool readConfigsOk = true;
         for (int i = 0;i < params.customConfigNum;i++) {
+            QString confCacheFile;
+            if (!confCacheDir.isEmpty()) {
+                confCacheFile = confCacheDir + "/conf_custom_" + QString::number(i) + ".bin";
+            }
+
+            if (!confCacheFile.isEmpty()) {
+                QFile f(confCacheFile);
+                if (f.exists() && f.open(QIODevice::ReadOnly)) {
+                    mCustomConfigs.append(new ConfigParams(this));
+                    connect(mCustomConfigs.last(), &ConfigParams::updateRequested, [this]() {
+                        mCommands->customConfigGet(mCustomConfigs.size() - 1, false);
+                    });
+                    connect(mCustomConfigs.last(), &ConfigParams::updateRequestDefault, [this]() {
+                        mCommands->customConfigGet(mCustomConfigs.size() - 1, true);
+                    });
+
+                    auto confData = f.readAll();
+                    f.close();
+
+                    if (!mCustomConfigs.last()->loadCompressedParamsXml(confData)) {
+                        readConfigsOk = false;
+                        break;
+                    }
+
+                    emitStatusMessage(QString("Got cached %1").arg(mCustomConfigs.last()->getLongName("hw_name")), true);
+                    continue;
+                }
+            }
+
             QByteArray configData;
             int confIndLast = 0;
             int lenConfLast = -1;
@@ -3730,7 +3870,16 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
                         break;
                     }
 
-                    emitStatusMessage(QString("Got custom config %1").arg(i), true);
+                    emitStatusMessage(QString("Got %1").arg(mCustomConfigs.last()->getLongName("hw_name")), true);
+
+                    if (!confCacheFile.isEmpty()) {
+                        QFile f(confCacheFile);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(configData);
+                            f.close();
+                            emitStatusMessage(QString("Cached %1").arg(confCacheFile), true);
+                        }
+                    }
                 } else {
                     emitMessageDialog("Get Custom Config",
                                       "Could not read custom config from hardware",
@@ -3747,104 +3896,164 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
         mCustomConfigsLoaded = readConfigsOk;
     }
 
-    mCustomConfigRxDone = true;
-    emit customConfigLoadDone();
-
-    // Read qmlui
+    // Read qmlui HW
     if (mLoadQmlUiOnConnect && params.hasQmlHw) {
-        QByteArray qmlData;
-        int lenQmlLast = -1;
-        auto conn = connect(mCommands, &Commands::qmluiHwRx,
-                            [&](int lenQml, int ofsQml, QByteArray data) {
-            if (qmlData.size() <= ofsQml) {
-                qmlData.append(data);
-            }
-            lenQmlLast = lenQml;
-        });
+        bool cacheLoadOk = false;
 
-        auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
-            bool res = false;
+        QString confCacheFile;
+        if (!confCacheDir.isEmpty()) {
+            confCacheFile = confCacheDir + "/qml_hw.bin";
+        }
 
-            for (int j = 0;j < tries;j++) {
-                mCommands->qmlUiHwGet(size, offset);
-                res = Utility::waitSignal(mCommands, SIGNAL(qmluiHwRx(int,int,QByteArray)), timeout);
-                if (res) {
-                    break;
-                }
-            }
-            return res;
-        };
+        if (!confCacheFile.isEmpty()) {
+            QFile f(confCacheFile);
+            if (f.exists() && f.open(QIODevice::ReadOnly)) {
+                auto qmlData = f.readAll();
+                f.close();
 
-        if (getQmlChunk(10, 0, 5, 1500)) {
-            while (qmlData.size() < lenQmlLast) {
-                int dataLeft = lenQmlLast - qmlData.size();
-                if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
-                    break;
-                }
-            }
-
-            if (qmlData.size() == lenQmlLast) {
                 mQmlHw = QString::fromUtf8(qUncompress(qmlData));
                 mQmlHwLoaded = true;
-                emitStatusMessage("Got qmlui HW", true);
-            } else {
-                mQmlHwLoaded = false;
-                emitMessageDialog("Get qmlui HW",
-                                  "Could not read qmlui HW from hardware",
-                                  false, false);
-                disconnect(conn);
+                emitStatusMessage("Got cached qmlui HW", true);
+                cacheLoadOk = true;
             }
         }
 
-        disconnect(conn);
+        if (!cacheLoadOk) {
+            QByteArray qmlData;
+            int lenQmlLast = -1;
+            auto conn = connect(mCommands, &Commands::qmluiHwRx,
+                                [&](int lenQml, int ofsQml, QByteArray data) {
+                if (qmlData.size() <= ofsQml) {
+                    qmlData.append(data);
+                }
+                lenQmlLast = lenQml;
+            });
+
+            auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
+                bool res = false;
+
+                for (int j = 0;j < tries;j++) {
+                    mCommands->qmlUiHwGet(size, offset);
+                    res = Utility::waitSignal(mCommands, SIGNAL(qmluiHwRx(int,int,QByteArray)), timeout);
+                    if (res) {
+                        break;
+                    }
+                }
+                return res;
+            };
+
+            if (getQmlChunk(10, 0, 5, 1500)) {
+                while (qmlData.size() < lenQmlLast) {
+                    int dataLeft = lenQmlLast - qmlData.size();
+                    if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
+                        break;
+                    }
+                }
+
+                if (qmlData.size() == lenQmlLast) {
+                    mQmlHw = QString::fromUtf8(qUncompress(qmlData));
+                    mQmlHwLoaded = true;
+                    emitStatusMessage("Got qmlui HW", true);
+
+                    if (!confCacheFile.isEmpty()) {
+                        QFile f(confCacheFile);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(qmlData);
+                            f.close();
+                            emitStatusMessage(QString("Cached %1").arg(confCacheFile), true);
+                        }
+                    }
+                } else {
+                    mQmlHwLoaded = false;
+                    emitMessageDialog("Get qmlui HW",
+                                      "Could not read qmlui HW from hardware",
+                                      false, false);
+                    disconnect(conn);
+                }
+            }
+
+            disconnect(conn);
+        }
     }
 
+    // Read qmlui APP
     if (mLoadQmlUiOnConnect && params.hasQmlApp) {
-        QByteArray qmlData;
-        int lenQmlLast = -1;
-        auto conn = connect(mCommands, &Commands::qmluiAppRx,
-                            [&](int lenQml, int ofsQml, QByteArray data) {
-            if (qmlData.size() <= ofsQml) {
-                qmlData.append(data);
-            }
-            lenQmlLast = lenQml;
-        });
+        bool cacheLoadOk = false;
 
-        auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
-            bool res = false;
+        QString confCacheFile;
+        if (!confCacheDir.isEmpty()) {
+            confCacheFile = confCacheDir + "/qml_app.bin";
+        }
 
-            for (int j = 0;j < tries;j++) {
-                mCommands->qmlUiAppGet(size, offset);
-                res = Utility::waitSignal(mCommands, SIGNAL(qmluiAppRx(int,int,QByteArray)), timeout);
-                if (res) {
-                    break;
-                }
-            }
-            return res;
-        };
+        if (!confCacheFile.isEmpty()) {
+            QFile f(confCacheFile);
+            if (f.exists() && f.open(QIODevice::ReadOnly)) {
+                auto qmlData = f.readAll();
+                f.close();
 
-        if (getQmlChunk(10, 0, 5, 1500)) {
-            while (qmlData.size() < lenQmlLast) {
-                int dataLeft = lenQmlLast - qmlData.size();
-                if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
-                    break;
-                }
-            }
-
-            if (qmlData.size() == lenQmlLast) {
                 mQmlApp = QString::fromUtf8(qUncompress(qmlData));
                 mQmlAppLoaded = true;
-                emitStatusMessage("Got qmlui App", true);
-            } else {
-                mQmlAppLoaded = false;
-                emitMessageDialog("Get qmlui App",
-                                  "Could not read qmlui App from hardware",
-                                  false, false);
-                disconnect(conn);
+                emitStatusMessage("Got cached qmlui App", true);
+                cacheLoadOk = true;
             }
         }
 
-        disconnect(conn);
+        if (!cacheLoadOk) {
+            QByteArray qmlData;
+            int lenQmlLast = -1;
+            auto conn = connect(mCommands, &Commands::qmluiAppRx,
+                                [&](int lenQml, int ofsQml, QByteArray data) {
+                if (qmlData.size() <= ofsQml) {
+                    qmlData.append(data);
+                }
+                lenQmlLast = lenQml;
+            });
+
+            auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
+                bool res = false;
+
+                for (int j = 0;j < tries;j++) {
+                    mCommands->qmlUiAppGet(size, offset);
+                    res = Utility::waitSignal(mCommands, SIGNAL(qmluiAppRx(int,int,QByteArray)), timeout);
+                    if (res) {
+                        break;
+                    }
+                }
+                return res;
+            };
+
+            if (getQmlChunk(10, 0, 5, 1500)) {
+                while (qmlData.size() < lenQmlLast) {
+                    int dataLeft = lenQmlLast - qmlData.size();
+                    if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
+                        break;
+                    }
+                }
+
+                if (qmlData.size() == lenQmlLast) {
+                    mQmlApp = QString::fromUtf8(qUncompress(qmlData));
+                    mQmlAppLoaded = true;
+                    emitStatusMessage("Got qmlui App", true);
+
+                    if (!confCacheFile.isEmpty()) {
+                        QFile f(confCacheFile);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(qmlData);
+                            f.close();
+                            emitStatusMessage(QString("Cached %1").arg(confCacheFile), true);
+                        }
+                    }
+                } else {
+                    mQmlAppLoaded = false;
+                    emitMessageDialog("Get qmlui App",
+                                      "Could not read qmlui App from hardware",
+                                      false, false);
+                    disconnect(conn);
+                }
+            }
+
+            disconnect(conn);
+        }
     }
 
     if (params.hasQmlApp || params.hasQmlHw) {
@@ -3854,16 +4063,19 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
     for (int i = 0;i < mCustomConfigs.size();i++) {
         commands()->customConfigGet(i, false);
     }
+
+    mCustomConfigRxDone = true;
+    emit customConfigLoadDone();
 }
 
 void VescInterface::appconfUpdated()
 {
-    emit statusMessage(tr("App configuration updated"), true);
+    emit statusMessage(tr("App config updated"), true);
 }
 
 void VescInterface::mcconfUpdated()
 {
-    emit statusMessage(tr("MC configuration updated"), true);
+    emit statusMessage(tr("Motor config updated"), true);
 
     if (isPortConnected() && fwRx()) {
         QPair<int, int> fw_connected = qMakePair(mLastFwParams.major, mLastFwParams.minor);
@@ -3895,13 +4107,23 @@ void VescInterface::customConfigRx(int confId, QByteArray data)
         auto vb = VByteArray(data);
         if (params->deSerialize(vb)) {
             params->updateDone();
-            emitStatusMessage(tr("Custom config %1 updated").arg(confId), true);
+            emitStatusMessage(tr("%1 updated").arg(params->getLongName("hw_name")), true);
         } else {
             emitMessageDialog(tr("Custom Configuration"),
                               tr("Could not deserialize custom config %1").arg(confId),
                               false, false);
         }
     }
+}
+
+bool VescInterface::ignoreCustomConfigs() const
+{
+    return mIgnoreCustomConfigs;
+}
+
+void VescInterface::setIgnoreCustomConfigs(bool newIgnoreCustomConfigs)
+{
+    mIgnoreCustomConfigs = newIgnoreCustomConfigs;
 }
 
 int VescInterface::getLastTcpHubPort() const
@@ -3944,6 +4166,52 @@ bool VescInterface::connectTcpHubUuid(QString uuid)
     }
 
     return false;
+}
+
+bool VescInterface::downloadFwArchive()
+{
+    bool res = false;
+
+    QUrl url("http://home.vedder.se/vesc_fw_archive/res_fw.rcc");
+    QNetworkAccessManager manager;
+    QNetworkRequest request(url);
+    QNetworkReply *reply = manager.get(request);
+    QString appDataLoc = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if(!QDir(appDataLoc).exists()) {
+        QDir().mkpath(appDataLoc);
+    }
+    QString path = appDataLoc + "/res_fw.rcc";
+    QFile file(path);
+    QResource::unregisterResource(path);
+    if (file.open(QIODevice::WriteOnly)) {
+        auto conn = connect(reply, &QNetworkReply::downloadProgress, [&file, reply, this]
+                            (qint64 bytesReceived, qint64 bytesTotal) {
+            emit fwArchiveDlProgress("Downloading...", (double)bytesReceived / (double)bytesTotal);
+            file.write(reply->read(reply->size()));
+        });
+
+        QEventLoop loop;
+        connect(reply, SIGNAL(finished()), &loop, SLOT(quit()));
+        loop.exec();
+        disconnect(conn);
+
+        if (reply->error() == QNetworkReply::NoError) {
+            file.write(reply->readAll());
+            emit fwArchiveDlProgress("Download Done", 1.0);
+        } else {
+            emit fwArchiveDlProgress("Download Failed", 0.0);
+        }
+
+        file.close();
+        res = true;
+    } else {
+        emit fwArchiveDlProgress("Could not open local file", 0.0);
+    }
+
+    reply->abort();
+    reply->deleteLater();
+
+    return res;
 }
 
 QString VescInterface::getLastTcpHubServer() const
@@ -4001,7 +4269,6 @@ bool VescInterface::confStoreBackup(bool can, QString name)
         if (pCustom != nullptr) {
             commands()->customConfigGet(0, false);
             rxCustom = Utility::waitSignal(pCustom, SIGNAL(updated()), 1500);
-            qDebug() << rxCustom;
         }
 
         if (rxMc && rxApp) {
@@ -4029,7 +4296,10 @@ bool VescInterface::confStoreBackup(bool can, QString name)
     int canLastId = commands()->getCanSendId();
     auto fwLast = getFirmwareNowPair();
 
+    QVector<int> canDevs;
+
     if (can) {
+        canDevs = scanCan();
         ignoreCanChange(true);
         commands()->setSendCan(false);
     }
@@ -4042,7 +4312,7 @@ bool VescInterface::confStoreBackup(bool can, QString name)
     }
 
     if (res && can) {
-        for (int d: scanCan()) {
+        foreach (int d, canDevs) {
             commands()->setSendCan(true, d);
 
             Utility::getFwVersionBlocking(this, &fwp);
@@ -4067,8 +4337,15 @@ bool VescInterface::confStoreBackup(bool can, QString name)
         storeSettings();
         emit configurationBackupsChanged();
 
+        // Refresh configs
+        commands()->getMcconf();
+        commands()->getAppConf();
+        if (customConfig(0) != nullptr) {
+            commands()->customConfigGet(0, false);
+        }
+
         QString uuidsStr;
-        for (auto s: uuidsOk) {
+        foreach (auto s, uuidsOk) {
             uuidsStr += s + "\n";
         }
 
@@ -4147,17 +4424,17 @@ bool VescInterface::confRestoreBackup(bool can)
 
                 if (!txMc) {
                     emitMessageDialog("Restore Configuration",
-                                      "No response when writing MC configuration to " + uuid + ".", false, false);
+                                      "No response when writing Motor config to " + uuid + ".", false, false);
                 }
 
                 if (!txApp) {
                     emitMessageDialog("Restore Configuration",
-                                      "No response when writing app configuration to " + uuid + ".", false, false);
+                                      "No response when writing App config to " + uuid + ".", false, false);
                 }
 
                 if (!txCustom) {
                     emitMessageDialog("Restore Configuration",
-                                      "No response when writing" + pCustom->getParam("hw_name")->longName + "configuration to " + uuid + ".", false, false);
+                                      "No response when writing " + pCustom->getLongName("hw_name") + " configuration to " + uuid + ".", false, false);
                 }
 
                 return txMc && txApp;
@@ -4176,8 +4453,10 @@ bool VescInterface::confRestoreBackup(bool can)
     bool canLastFwd = commands()->getSendCan();
     int canLastId = commands()->getCanSendId();
     auto fwLast = getFirmwareNowPair();
+    QVector<int> canDevs;
 
     if (can) {
+        canDevs = scanCan();
         ignoreCanChange(true);
         commands()->setSendCan(false);
     }
@@ -4190,7 +4469,7 @@ bool VescInterface::confRestoreBackup(bool can)
     }
 
     if (res && can) {
-        for (int d: scanCan()) {
+        foreach (int d, canDevs) {
             commands()->setSendCan(true, d);
 
             Utility::getFwVersionBlocking(this, &fwp);
@@ -4215,12 +4494,16 @@ bool VescInterface::confRestoreBackup(bool can)
         storeSettings();
         emit configurationBackupsChanged();
 
-        commands()->getMcconf(); //Refresh Motor conf.
-        commands()->getAppConf(); //Refresh App conf.
+        // Refresh configs
+        commands()->getMcconf();
+        commands()->getAppConf();
+        if (customConfig(0) != nullptr) {
+            commands()->customConfigGet(0, false);
+        }
 
         if (!uuidsOk.isEmpty()) {
             QString uuidsStr;
-            for (auto s: uuidsOk) {
+            foreach (auto s, uuidsOk) {
                 uuidsStr += s + "\n";
             }
 
@@ -4231,7 +4514,7 @@ bool VescInterface::confRestoreBackup(bool can)
 
         if (!missingConfigs.empty()) {
             QString missing;
-            for (auto s: missingConfigs) {
+            foreach (auto s, missingConfigs) {
                 missing += s + "\n";
             }
 

@@ -17,9 +17,10 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-import QtQuick 2.12
-import QtQuick.Controls 2.12
+import QtQuick 2.15
+import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.3
+import QtQuick.Dialogs 1.3 as Dl
 
 import Vedder.vesc.vescinterface 1.0
 import Vedder.vesc.commands 1.0
@@ -28,6 +29,7 @@ import Vedder.vesc.utility 1.0
 import Vedder.vesc.codeloader 1.0
 
 Item {
+    id: appPageItem
     property var dialogParent: ApplicationWindow.overlay
     property ConfigParams mAppConf: VescIf.appConfig()
     property Commands mCommands: VescIf.commands()
@@ -158,12 +160,15 @@ Item {
                                     repeat: false
                                     running: false
                                     onTriggered: {
-                                        mLoader.installVescPackage(pkg.compressedData)
+                                        var res = mLoader.installVescPackage(pkg.compressedData)
                                         enableDialog()
-                                        VescIf.emitMessageDialog("Install Package",
-                                                                 "Install Done! Please disconnect and reconnect to " +
-                                                                 "apply possible VESC Tool GUI updates from this package.",
-                                                                 true, false)
+
+                                        if (res) {
+                                            VescIf.emitMessageDialog("Install Package",
+                                                                     "Install Done! Please disconnect and reconnect to " +
+                                                                     "apply possible VESC Tool GUI updates from this package.",
+                                                                     true, false)
+                                        }
                                     }
                                 }
                             }
@@ -175,7 +180,7 @@ Item {
                                 text: "Info"
 
                                 onClicked: {
-                                    VescIf.emitMessageDialog(pkgName, pkgDescription, true, true)
+                                    VescIf.emitMessageDialog(pkgName, Utility.md2html(pkgDescription), true, true)
                                 }
                             }
                         }
@@ -225,13 +230,95 @@ Item {
                     repeat: false
                     running: false
                     onTriggered: {
-                        mLoader.lispErase()
-                        mLoader.qmlErase()
+                        var resLisp = mLoader.lispErase(16)
+                        var resQml = mLoader.qmlErase(16)
+                        Utility.sleepWithEventLoop(500)
+
+                        if (resLisp || resQml) {
+                            VescIf.reloadFirmware()
+                        }
+
                         enableDialog()
-                        VescIf.emitMessageDialog("Uninstall Package",
-                                                 "Uninstallation Done! Please disconnect and reconnect to " +
-                                                 "revert possible VESC Tool GUI updates.",
-                                                 true, false)
+
+                        if (resLisp && resQml) {
+                            VescIf.emitMessageDialog("Uninstall Package",
+                                                     "Uninstallation Done!",
+                                                     true, false)
+                        }
+                    }
+                }
+            }
+
+            Button {
+                Layout.preferredWidth: 50
+                Layout.fillWidth: true
+                text: "..."
+                onClicked: menu.open()
+
+                Menu {
+                    id: menu
+                    bottomPadding: notchBot
+                    leftPadding: notchLeft
+                    rightPadding: notchRight
+                    parent: appPageItem
+                    y: parent.height - implicitHeight
+                    width: parent.width
+
+                    MenuItem {
+                        text: "Install from file..."
+                        onTriggered: {
+                            if (Utility.requestFilePermission()) {
+                                fileDialogLoad.close()
+                                fileDialogLoad.open()
+                            } else {
+                                VescIf.emitMessageDialog(
+                                            "File Permissions",
+                                            "Unable to request file system permission.",
+                                            false, false)
+                            }
+                        }
+
+                        Dl.FileDialog {
+                            id: fileDialogLoad
+                            title: "Please choose a file"
+                            nameFilters: ["*"]
+                            selectExisting: true
+                            selectMultiple: false
+                            onAccepted: {
+                                workaroundTimerFile.pkgPath = fileUrl.toString()
+                                close()
+                                parent.forceActiveFocus()
+
+                                disableDialog()
+                                workaroundTimerFile.start()
+                            }
+
+                            onRejected: {
+                                close()
+                                parent.forceActiveFocus()
+                            }
+                        }
+
+                        Timer {
+                            property string pkgPath: ""
+                            id: workaroundTimerFile
+                            interval: 0
+                            repeat: false
+                            running: false
+                            onTriggered: {
+                                if (mLoader.installVescPackageFromPath(pkgPath)) {
+                                    enableDialog()
+                                    VescIf.emitMessageDialog("Install Package",
+                                                             "Installation Done!",
+                                                             true, false)
+                                } else {
+                                    enableDialog()
+                                    VescIf.emitMessageDialog("Install Package",
+                                                             "Installation failed",
+                                                             false, false)
+                                }
+                            }
+                        }
                     }
                 }
             }

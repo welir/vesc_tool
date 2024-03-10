@@ -49,7 +49,6 @@ Commands::Commands(QObject *parent) : QObject(parent)
     mTimeoutDecPpm = 0;
     mTimeoutDecAdc = 0;
     mTimeoutDecChuk = 0;
-    mTimeoutDecBalance = 0;
     mTimeoutPingCan = 0;
     mTimeoutCustomConf = 0;
     mTimeoutBmsVal = 0;
@@ -158,6 +157,10 @@ void Commands::processPacket(QByteArray data)
 
         if (vb.size() >= 1) {
             params.fwName = vb.vbPopFrontString();
+        }
+
+        if (vb.size() >= 4) {
+            params.hwConfCrc = vb.vbPopFrontUint32();
         }
 
         emit fwVersionReceived(params);
@@ -399,35 +402,16 @@ void Commands::processPacket(QByteArray data)
         emit decodedChukReceived(vb.vbPopFrontDouble32(1000000.0));
         break;
 
-    case COMM_GET_DECODED_BALANCE: {
-        mTimeoutDecBalance = 0;
-
-        BALANCE_VALUES values;
-
-        values.pid_output = vb.vbPopFrontDouble32(1e6);
-        values.pitch_angle = vb.vbPopFrontDouble32(1e6);
-        values.roll_angle = vb.vbPopFrontDouble32(1e6);
-        values.diff_time = vb.vbPopFrontUint32();
-        values.motor_current = vb.vbPopFrontDouble32(1e6);
-        values.debug1 = vb.vbPopFrontDouble32(1e6);
-        values.state = vb.vbPopFrontUint16();
-        values.switch_value = vb.vbPopFrontUint16();
-        values.adc1 = vb.vbPopFrontDouble32(1e6);
-        values.adc2 = vb.vbPopFrontDouble32(1e6);
-        values.debug2 = vb.vbPopFrontDouble32(1e6);
-        emit decodedBalanceReceived(values);
-    } break;
-
     case COMM_SET_MCCONF:
-        emit ackReceived("MCCONF Write OK");
+        emit ackReceived("Motor config write OK");
         break;
 
     case COMM_SET_APPCONF:
-        emit ackReceived("APPCONF Write OK");
+        emit ackReceived("App config write OK");
         break;
 
     case COMM_SET_APPCONF_NO_STORE:
-        emit ackReceived("APPCONF_NO_STORE Write OK");
+        emit ackReceived("App config set OK");
         break;
 
     case COMM_CUSTOM_APP_DATA:
@@ -616,9 +600,7 @@ void Commands::processPacket(QByteArray data)
             values.q3 = vb.vbPopFrontDouble32Auto();
         }
         if (vb.size() >= 1) {
-            if (mask & (uint32_t(1) << 16)) {
-                values.vesc_id = vb.vbPopFrontUint8();
-            }
+            values.vesc_id = vb.vbPopFrontUint8();
         }
 
         emit valuesImuReceived(values, mask);
@@ -744,14 +726,19 @@ void Commands::processPacket(QByteArray data)
             val.wh_cnt_dis_total = vb.vbPopFrontDouble32Auto();
         }
 
+        if (vb.size() >= 2) {
+            val.pressure = vb.vbPopFrontDouble16(1e-1);
+        }
+
         val.updateTimeStamp();
 
         emit bmsValuesRx(val);
     } break;
 
-    case COMM_SET_CUSTOM_CONFIG:
-        emit ackReceived("COMM_SET_CUSTOM_CONFIG Write OK");
-        break;
+    case COMM_SET_CUSTOM_CONFIG: {
+        int confId = vb.vbPopFrontUint8();
+        emit customConfigAckReceived(confId);
+    } break;
 
     case COMM_GET_CUSTOM_CONFIG:
     case COMM_GET_CUSTOM_CONFIG_DEFAULT: {
@@ -1382,6 +1369,8 @@ void Commands::setMcconf(bool check)
         if (check) {
             checkMcConfig();
         }
+
+        emit mcConfigWriteSent(check);
     }
 }
 
@@ -1448,6 +1437,15 @@ void Commands::reboot()
     emitData(vb);
 }
 
+void Commands::shutdown()
+{
+    VByteArray vb;
+    vb.vbAppendInt8(COMM_SHUTDOWN);
+    vb.vbAppendInt8(0);
+    vb.vbAppendInt8(0);
+    emitData(vb);
+}
+
 void Commands::sendAlive()
 {
     VByteArray vb;
@@ -1491,19 +1489,6 @@ void Commands::getDecodedChuk()
 
     VByteArray vb;
     vb.vbAppendInt8(COMM_GET_DECODED_CHUK);
-    emitData(vb);
-}
-
-void Commands::getDecodedBalance()
-{
-    if (mTimeoutDecBalance > 0) {
-        return;
-    }
-
-    mTimeoutDecBalance = mTimeoutCount;
-
-    VByteArray vb;
-    vb.vbAppendInt8(COMM_GET_DECODED_BALANCE);
     emitData(vb);
 }
 
@@ -2067,10 +2052,11 @@ void Commands::qmlUiAppGet(int len, int offset)
     emitData(vb);
 }
 
-void Commands::qmlUiErase()
+void Commands::qmlUiErase(int size)
 {
     VByteArray vb;
     vb.vbAppendUint8(COMM_QMLUI_ERASE);
+    vb.vbAppendInt32(size);
     emitData(vb);
 }
 
@@ -2170,10 +2156,11 @@ void Commands::lispStreamCode(QByteArray data, quint32 offset, quint32 totLen, q
     emitData(vb);
 }
 
-void Commands::lispEraseCode()
+void Commands::lispEraseCode(int size)
 {
     VByteArray vb;
     vb.vbAppendUint8(COMM_LISP_ERASE_CODE);
+    vb.vbAppendInt32(size);
     emitData(vb);
 }
 
@@ -2185,10 +2172,11 @@ void Commands::lispSetRunning(bool running)
     emitData(vb);
 }
 
-void Commands::lispGetStats()
+void Commands::lispGetStats(bool all)
 {
     VByteArray vb;
     vb.vbAppendUint8(COMM_LISP_GET_STATS);
+    vb.vbAppendInt8(all);
     emitData(vb);
 }
 
@@ -2277,7 +2265,6 @@ void Commands::timerSlot()
     if (mTimeoutDecPpm > 0) mTimeoutDecPpm--;
     if (mTimeoutDecAdc > 0) mTimeoutDecAdc--;
     if (mTimeoutDecChuk > 0) mTimeoutDecChuk--;
-    if (mTimeoutDecBalance > 0) mTimeoutDecBalance--;
     if (mTimeoutPingCan > 0) {
         mTimeoutPingCan--;
         if (mTimeoutPingCan == 0) {
@@ -2395,8 +2382,13 @@ QVariantList Commands::fileBlockList(QString path)
         qWarning() << "Could not list files";
     }
 
+    std::sort(files.begin(), files.end(), []
+              (const FILE_LIST_ENTRY & a, const FILE_LIST_ENTRY & b) {
+        return a.name.toLower() < b.name.toLower();
+    });
+
     QVariantList retVal;
-    for (auto f: files) {
+    foreach (auto f, files) {
         retVal.append(QVariant::fromValue(f));
     }
 
@@ -2623,6 +2615,11 @@ void Commands::fileBlockCancel()
     mFilePercentage = 0.0;
     mFileSpeed = 0;
     emit fileProgress(0, 0, mFilePercentage, mFileSpeed);
+}
+
+bool Commands::fileBlockDidCancel()
+{
+    return mFileShouldCancel;
 }
 
 bool Commands::getLimitedSupportsFwdAllCan() const

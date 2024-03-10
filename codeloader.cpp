@@ -43,7 +43,7 @@ void CodeLoader::setVesc(VescInterface *vesc)
     mVesc = vesc;
 }
 
-bool CodeLoader::lispErase()
+bool CodeLoader::lispErase(int size)
 {
     if (!mVesc) {
         return false;
@@ -60,7 +60,7 @@ bool CodeLoader::lispErase()
         QEventLoop loop;
         QTimer timeoutTimer;
         timeoutTimer.setSingleShot(true);
-        timeoutTimer.start(6000);
+        timeoutTimer.start(8000);
         auto conn = connect(mVesc->commands(), &Commands::lispEraseCodeRx,
                             [&res,&loop](bool erRes) {
             res = erRes ? 1 : -1;
@@ -74,7 +74,7 @@ bool CodeLoader::lispErase()
         return res;
     };
 
-    mVesc->commands()->lispEraseCode();
+    mVesc->commands()->lispEraseCode(size);
 
     int erRes = waitEraseRes();
     if (erRes != 1) {
@@ -121,119 +121,99 @@ QByteArray CodeLoader::lispPackImports(QString codeStr, QString editorPath)
         auto lines = codeStr.split("\n");
         int line_num = 0;
 
-        for (auto line: lines) {
+        foreach (auto line, lines) {
             line_num++;
 
-            while (line.startsWith(" ")) {
-                line.remove(0, 1);
-            }
+            QString path;
+            QString tag;
+            bool isInvalid;
 
-            while (line.startsWith("( ")) {
-                line.remove(1, 1);
-            }
+            if (getImportFromLine(line, path, tag, isInvalid)) {
+                if (isInvalid) {
+                    dbg(tr("Append Imports"),
+                        tr("Line: %1: Invalid import tag.").arg(line_num),
+                        false);
+                    return QByteArray();
+                }
 
-            if (line.startsWith("(import ", Qt::CaseInsensitive)) {
-                int start = line.indexOf("\"");
-                int end = line.lastIndexOf("\"");
+                auto pkgErrorMsg = "If you are importing from a package downloaded from the package store, "
+                                   "you might need to update the package archive. That can be done from "
+                                   "the VESC Packages page.";
 
-                if (start > 0 && end > start) {
-                    auto path = line.mid(start + 1, end - start - 1);
-                    auto tag = line.mid(end + 1).replace("\r", "").replace(" ", "").replace(")", "").replace("'", "");
-                    if (tag.indexOf(";") >= 0) {
-                        tag = tag.mid(0, tag.indexOf(";"));
-                    }
+                bool isPkgImport = false;
+                QString pkgImportName;
+                if (path.startsWith("pkg::")) {
+                    path.remove(0, 5);
 
-                    if (tag.isEmpty()) {
+                    auto atInd = path.indexOf("@");
+                    if (atInd > 0) {
+                        pkgImportName = path.mid(0, atInd);
+                        path.remove(0, atInd + 1);
+                    } else {
                         dbg(tr("Append Imports"),
                             tr("Line: %1: Invalid import tag.").arg(line_num),
                             false);
                         return QByteArray();
                     }
 
-                    auto pkgErrorMsg = "If you are importing from a package in the git repository you might "
-                                       "need to update the package archive. That can be done from the the "
-                                       "VESC Packages page.";
+                    isPkgImport = true;
+                } else if (path.startsWith("pkg@")) {
+                    path.remove(0, 4);
+                    isPkgImport = true;
+                }
 
-                    bool isPkgImport = false;
-                    QString pkgImportName;
-                    if (path.startsWith("pkg::")) {
-                        path.remove(0, 5);
+                QFileInfo fi(editorPath + "/" + path);
+                if (!fi.exists()) {
+                    fi = QFileInfo(path);
+                }
 
-                        auto atInd = path.indexOf("@");
-                        if (atInd > 0) {
-                            pkgImportName = path.mid(0, atInd);
-                            path.remove(0, atInd + 1);
-                        } else {
-                            dbg(tr("Append Imports"),
-                                tr("Line: %1: Invalid import tag.").arg(line_num),
-                                false);
-                            return QByteArray();
-                        }
+                if (fi.exists()) {
+                    QFile f(fi.absoluteFilePath());
+                    if (f.open(QIODevice::ReadOnly)) {
+                        auto fileData = f.readAll();
 
-                        isPkgImport = true;
-                    } else if (path.startsWith("pkg@")) {
-                        path.remove(0, 4);
-                        isPkgImport = true;
-                    }
+                        if (isPkgImport) {
+                            auto pkg = unpackVescPackage(fileData);
+                            auto imports = lispUnpackImports(pkg.lispData);
 
-                    QFileInfo fi(editorPath + "/" + path);
-                    if (!fi.exists()) {
-                        fi = QFileInfo(path);
-                    }
-
-                    if (fi.exists()) {
-                        QFile f(fi.absoluteFilePath());
-                        if (f.open(QIODevice::ReadOnly)) {
-                            auto fileData = f.readAll();
-
-                            if (isPkgImport) {
-                                auto pkg = unpackVescPackage(fileData);
-                                auto imports = lispUnpackImports(pkg.lispData);
-
-                                if (pkgImportName.isEmpty()) {
-                                    auto importData = imports.first.toLocal8Bit();
-                                    importData.append('\0'); // Pad with 0 in case it is a text file
-                                    files.append(qMakePair(tag, importData));
-                                } else {
-                                    bool found = false;
-                                    for (auto i: imports.second) {
-                                        if (i.first == pkgImportName) {
-                                            auto importData = i.second;
-                                            importData.append('\0'); // Pad with 0 in case it is a text file
-                                            files.append(qMakePair(tag, importData));
-                                            found = true;
-                                            break;
-                                        }
-                                    }
-
-                                    if (!found) {
-                                        mVesc->emitMessageDialog(tr("Append Imports"),
-                                                                 tr("Tag %1 not found in package %2. %3").
-                                                                 arg(pkgImportName).arg(path).arg(pkgErrorMsg),
-                                                                 false);
-                                        return QByteArray();
+                            if (pkgImportName.isEmpty()) {
+                                auto importData = imports.first.toLocal8Bit();
+                                importData.append('\0'); // Pad with 0 in case it is a text file
+                                files.append(qMakePair(tag, importData));
+                            } else {
+                                bool found = false;
+                                for (auto i: imports.second) {
+                                    if (i.first == pkgImportName) {
+                                        auto importData = i.second;
+                                        importData.append('\0'); // Pad with 0 in case it is a text file
+                                        files.append(qMakePair(tag, importData));
+                                        found = true;
+                                        break;
                                     }
                                 }
-                            } else {
-                                fileData.append('\0'); // Pad with 0 in case it is a text file
-                                files.append(qMakePair(tag, fileData));
+
+                                if (!found) {
+                                    mVesc->emitMessageDialog(tr("Append Imports"),
+                                                             tr("Tag %1 not found in package %2. %3").
+                                                             arg(pkgImportName).arg(path).arg(pkgErrorMsg),
+                                                             false);
+                                    return QByteArray();
+                                }
                             }
                         } else {
-                            dbg(tr("Append Imports"),
-                                tr("Line: %1: Imported file cannot be opened.").arg(line_num),
-                                false);
-                            return QByteArray();
+                            fileData.append('\0'); // Pad with 0 in case it is a text file
+                            files.append(qMakePair(tag, fileData));
                         }
                     } else {
                         dbg(tr("Append Imports"),
-                            tr("Line: %1: Imported file not found: %2. %3").
-                            arg(line_num).arg(fi.absoluteFilePath()).arg(pkgErrorMsg),
+                            tr("Line: %1: Imported file cannot be opened.").arg(line_num),
                             false);
                         return QByteArray();
                     }
                 } else {
                     dbg(tr("Append Imports"),
-                        tr("Line %1: Invalid import.").arg(line_num),
+                        tr("Line: %1: Imported file not found: %2. %3").
+                        arg(line_num).arg(fi.absoluteFilePath()).arg(pkgErrorMsg),
                         false);
                     return QByteArray();
                 }
@@ -313,7 +293,15 @@ bool CodeLoader::lispUpload(VByteArray vb)
     data.vbAppendUint16(crc);
     data.append(vb);
 
-    if (data.size() > (1024 * 120)) {
+    // The ESP32 partition table has 512k space for lisp scripts. The STM32
+    // has one 128k flash page.
+    auto fwParams = mVesc->getLastFwRxParams();
+    int max_size = 1024 * 500;
+    if (fwParams.hwType == HW_TYPE_VESC) {
+        max_size = 1024 * 120;
+    }
+
+    if (data.size() > max_size) {
         mVesc->emitMessageDialog(tr("Upload Code"), tr("Not enough space"), false);
         return false;
     }
@@ -433,7 +421,7 @@ bool CodeLoader::lispStream(VByteArray vb, qint8 mode)
     return ok;
 }
 
-QString CodeLoader::lispRead(QWidget *parent)
+QString CodeLoader::lispRead(QWidget *parent, QString &lispPath)
 {
     if (!mVesc->isPortConnected()) {
         mVesc->emitMessageDialog(tr("Read code"), tr("Not Connected"), false);
@@ -485,23 +473,64 @@ QString CodeLoader::lispRead(QWidget *parent)
                                                   tr("%1 imports found. Do you want to save them as files?").arg(num_imports),
                                                   QMessageBox::Yes | QMessageBox::No);
 
-                QString lastDir = "";
-                if (reply == QMessageBox::Yes) {
-                    for (auto i: unpacked.second) {
-                        QString fileName = QFileDialog::getSaveFileName(parent,
-                                                                        tr("Save Import %1").arg(i.first),
-                                                                        lastDir + "/" + i.first + ".bin");
+                QMap<QString, QString> importPaths;
+                foreach (auto line, res.split('\n')) {
+                    QString path;
+                    QString tag;
+                    bool isInvalid;
+                    if (getImportFromLine(line, path, tag, isInvalid)) {
+                        if (!isInvalid) {
+                            importPaths.insert(tag, path);
+                        }
+                    }
+                }
 
-                        if (!fileName.isEmpty()) {
-                            QFile file(fileName);
-                            if (!file.open(QIODevice::WriteOnly)) {
-                                QMessageBox::critical(parent, tr("Save Import"),
-                                                      "Could not open\n" + fileName + "\nfor writing");
-                                return QByteArray();
+                if (reply == QMessageBox::Yes) {
+                    QString dirName = QFileDialog::getExistingDirectory(parent, tr("Choose Directory"));
+
+                    if (!dirName.isEmpty()) {
+                        QFile fileLisp(dirName + "/From VESC.lisp");
+                        if (!fileLisp.exists()) {
+                            if (fileLisp.open(QIODevice::WriteOnly)) {
+                                fileLisp.write(res.toUtf8());
+                                fileLisp.close();
+                                lispPath = QFileInfo(fileLisp).canonicalFilePath();
+                            }
+                        }
+
+                        foreach (auto i, unpacked.second) {
+                            QString fileName = dirName + "/" + i.first + ".bin";
+
+                            if (importPaths.contains(i.first)) {
+                                const auto &path = importPaths[i.first];
+
+                                if (!path.startsWith("/") &&
+                                        !path.startsWith("\\") &&
+                                        !path.startsWith("pkg::") &&
+                                        !path.startsWith("pkg@")) {
+                                    fileName = dirName + "/" + path;
+                                }
                             }
 
+                            QFile file(fileName);
                             QFileInfo fi(file);
-                            lastDir = fi.canonicalPath();
+                            QDir().mkpath(fi.path());
+
+                            if (file.exists()) {
+                                auto reply = QMessageBox::question(parent,
+                                                                   tr("Replace File"),
+                                                                   tr("File %1 exists. Do you want to replace it?").arg(i.first));
+
+                                if (reply != QMessageBox::Yes) {
+                                    continue;
+                                }
+                            }
+
+                            if (!file.open(QIODevice::WriteOnly)) {
+                                QMessageBox::critical(parent, tr("Save Import"),
+                                                      "Could not open\n" + file.fileName() + "\nfor writing");
+                                return QByteArray();
+                            }
 
                             file.write(i.second);
                             file.close();
@@ -523,7 +552,7 @@ QString CodeLoader::lispRead(QWidget *parent)
     return "";
 }
 
-bool CodeLoader::qmlErase()
+bool CodeLoader::qmlErase(int size)
 {
     if (!mVesc) {
         return false;
@@ -554,7 +583,7 @@ bool CodeLoader::qmlErase()
         return res;
     };
 
-    mVesc->commands()->qmlUiErase();
+    mVesc->commands()->qmlUiErase(size);
 
     int erRes = waitEraseRes();
     if (erRes != 1) {
@@ -573,11 +602,15 @@ bool CodeLoader::qmlErase()
     return true;
 }
 
-bool CodeLoader::qmlUpload(QString script, bool isFullscreen)
+QByteArray CodeLoader::qmlCompress(QString script)
 {
     script.prepend("import \"qrc:/mobile\";");
     script.prepend("import Vedder.vesc.vescinterface 1.0;");
+    return qCompress(script.toUtf8(), 9);
+}
 
+bool CodeLoader::qmlUpload(QByteArray script, bool isFullscreen)
+{
     auto waitWriteRes = [this]() {
         int res = -10;
 
@@ -615,7 +648,7 @@ bool CodeLoader::qmlUpload(QString script, bool isFullscreen)
 
     VByteArray vb;
     vb.vbAppendUint16(isFullscreen ? 2 : 1);
-    vb.append(qCompress(script.toUtf8(), 9));
+    vb.append(script);
     quint16 crc = Packet::crc16((const unsigned char*)vb.constData(),
                                 uint32_t(vb.size()));
     VByteArray data;
@@ -692,6 +725,9 @@ VescPackage CodeLoader::unpackVescPackage(QByteArray data)
     VescPackage pkg;
     VByteArray vb(qUncompress(data));
 
+    // Yes, packet is a typo and should say package...
+    // That does not matter in practice and changing that now breaks
+    // compatibility.
     if (vb.vbPopFrontString() != "VESC Packet") {
         qWarning() << "Invalid VESC Packet";
         return pkg;
@@ -743,27 +779,43 @@ VescPackage CodeLoader::unpackVescPackage(QByteArray data)
 
 bool CodeLoader::installVescPackage(VescPackage pkg)
 {
+    if (!pkg.loadOk) {
+        mVesc->emitMessageDialog(tr("Write Package"), tr("Package is not valid."), false);
+        return false;
+    }
+
     bool res = true;
+    QByteArray qml;
 
-    if (res && !pkg.qmlFile.isEmpty()) {
-        res = qmlErase();
+    if (!pkg.qmlFile.isEmpty()) {
+        qml = qmlCompress(pkg.qmlFile);
+        res = qmlErase(qml.size() + 100);
+
+        if (res) {
+            res = qmlUpload(qml, pkg.qmlIsFullscreen);
+        }
+    } else {
+        res = qmlErase(16);
     }
 
-    if (res && !pkg.qmlFile.isEmpty()) {
-        res = qmlUpload(pkg.qmlFile, pkg.qmlIsFullscreen);
+    if (res) {
+        if (!pkg.lispData.isEmpty()) {
+            res = lispErase(pkg.lispData.size() + 100);
+
+            if (res) {
+                res = lispUpload(VByteArray(pkg.lispData));
+
+                if (res) {
+                    mVesc->commands()->lispSetRunning(1);
+                }
+            }
+        } else {
+            res = lispErase(16);
+        }
     }
 
-    if (res && !pkg.lispData.isEmpty()) {
-        res = lispErase();
-    }
-
-    if (res && !pkg.lispData.isEmpty()) {
-        res = lispUpload(VByteArray(pkg.lispData));
-    }
-
-    if (res && !pkg.lispData.isEmpty()) {
-        mVesc->commands()->lispSetRunning(1);
-    }
+    Utility::sleepWithEventLoop(500);
+    mVesc->reloadFirmware();
 
     return res;
 }
@@ -773,11 +825,31 @@ bool CodeLoader::installVescPackage(QByteArray data)
     return installVescPackage(unpackVescPackage(data));
 }
 
+bool CodeLoader::installVescPackageFromPath(QString path)
+{
+    if (path.startsWith("file:/")) {
+        path.remove(0, 6);
+    }
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        mVesc->emitMessageDialog(tr("Write Package"),
+                                 tr("Could not open package file for reading."),
+                                 false, false);
+        return false;
+    }
+
+    return installVescPackage(f.readAll());
+}
 
 QVariantList CodeLoader::reloadPackageArchive()
 {
     QVariantList res;
-    QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/vesc_pkg_all.rcc";
+    QString appDataLoc = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if(!QDir(appDataLoc).exists()) {
+            QDir().mkpath(appDataLoc);
+    }
+    QString path = appDataLoc + "/vesc_pkg_all.rcc";
     QFile file(path);
     if (file.exists()) {
         QResource::unregisterResource(path);
@@ -828,17 +900,63 @@ bool CodeLoader::downloadPackageArchive()
     loop.exec();
 
     if (reply->error() == QNetworkReply::NoError) {
-        QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/vesc_pkg_all.rcc";
+        QString appDataLoc = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if(!QDir(appDataLoc).exists()) {
+                QDir().mkpath(appDataLoc);
+        }
+        QString path = appDataLoc + "/vesc_pkg_all.rcc";
+        QResource::unregisterResource(path);
         QFile file(path);
         if (file.open(QIODevice::WriteOnly)) {
             file.write(reply->readAll());
             file.close();
             res = true;
         }
+
+        // Remove image cache
+        QString cacheLoc = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QDir(cacheLoc + "/img/").removeRecursively();
     }
 
     reply->abort();
     reply->deleteLater();
+
+    return res;
+}
+
+bool CodeLoader::getImportFromLine(QString line, QString &path, QString &tag, bool &isInvalid)
+{
+    bool res = false;
+    isInvalid = false;
+
+    while (line.startsWith(" ")) {
+        line.remove(0, 1);
+    }
+
+    while (line.startsWith("( ")) {
+        line.remove(1, 1);
+    }
+
+    if (line.startsWith("(import ", Qt::CaseInsensitive)) {
+        int start = line.indexOf("\"");
+        int end = line.lastIndexOf("\"");
+
+        if (start > 0 && end > start) {
+            path = line.mid(start + 1, end - start - 1);
+            tag = line.mid(end + 1).replace("\r", "").replace(" ", "").replace(")", "").replace("'", "");
+            if (tag.indexOf(";") >= 0) {
+                tag = tag.mid(0, tag.indexOf(";"));
+            }
+        } else {
+            isInvalid = true;
+        }
+
+        res = true;
+    }
+
+    if (path.isEmpty() || tag.isEmpty()) {
+        isInvalid = true;
+    }
 
     return res;
 }

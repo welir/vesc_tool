@@ -5,16 +5,19 @@
 #-------------------------------------------------
 
 # Version
-VT_VERSION = 6.00
+VT_VERSION = 6.05
 VT_INTRO_VERSION = 1
 VT_CONFIG_VERSION = 2
-11
-# Set to 0 for stable versions and to test version number for development versions.
-VT_IS_TEST_VERSION = 0
 
-VT_ANDROID_VERSION_ARMV7 = 120
-VT_ANDROID_VERSION_ARM64 = 121
-VT_ANDROID_VERSION_X86 = 122
+# Set to 0 for stable versions and to test version number for development versions.
+VT_IS_TEST_VERSION = 2
+
+# GIT commit
+VT_GIT_COMMIT = $$system(git rev-parse --short=8 HEAD)
+
+VT_ANDROID_VERSION_ARMV7 = 134
+VT_ANDROID_VERSION_ARM64 = 135
+VT_ANDROID_VERSION_X86 = 136
 
 VT_ANDROID_VERSION = $$VT_ANDROID_VERSION_X86
 
@@ -25,6 +28,7 @@ DEFINES += VT_VERSION=$$VT_VERSION
 DEFINES += VT_INTRO_VERSION=$$VT_INTRO_VERSION
 DEFINES += VT_CONFIG_VERSION=$$VT_CONFIG_VERSION
 DEFINES += VT_IS_TEST_VERSION=$$VT_IS_TEST_VERSION
+DEFINES += VT_GIT_COMMIT=$$VT_GIT_COMMIT
 QT_LOGGING_RULES="qt.qml.connections=false"
 #CONFIG += qtquickcompiler
 
@@ -40,6 +44,9 @@ ios: {
 
 # Build mobile GUI
 CONFIG += build_mobile
+
+# Exclude built-in firmwares
+#CONFIG += exclude_fw
 
 ios: {
     CONFIG    += build_mobile
@@ -262,14 +269,22 @@ include(lzokay/lzokay.pri)
 include(heatshrink/heatshrink.pri)
 include(QCodeEditor/qcodeeditor.pri)
 include(esp32/esp32.pri)
+include(display_tool/display_tool.pri)
+include(qmarkdowntextedit/qmarkdowntextedit.pri)
+include(maddy/maddy.pri)
+include(minimp3/minimp3.pri)
 
 RESOURCES += res.qrc \
-    res_fw_bms.qrc \
-    res/firmwares/res_fw.qrc \
+    res_custom_module.qrc \
     res_lisp.qrc \
-    res_qml.qrc \
-    res/firmwares_esp/res_fw_esp.qrc
+    res_qml.qrc
 RESOURCES += res_config.qrc
+
+!exclude_fw {
+    RESOURCES += res_fw_bms.qrc
+    RESOURCES += res/firmwares/res_fw.qrc
+    RESOURCES += res/firmwares_esp/res_fw_esp.qrc
+}
 
 build_original {
     RESOURCES += res_original.qrc

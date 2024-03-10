@@ -255,6 +255,16 @@ public:
     Q_INVOKABLE bool updateTcpHubPassword(QString uuid, QString newPass);
     Q_INVOKABLE bool connectTcpHubUuid(QString uuid);
 
+    // Force reloading of firmware version, custom UIs and custom configs
+    Q_INVOKABLE void reloadFirmware() {
+        updateFwRx(false);
+    }
+
+    Q_INVOKABLE bool downloadFwArchive();
+
+    bool ignoreCustomConfigs() const;
+    void setIgnoreCustomConfigs(bool newIgnoreCustomConfigs);
+
 signals:
     void statusMessage(const QString &msg, bool isGood);
     void messageDialog(const QString &title, const QString &msg, bool isGood, bool richText);
@@ -274,6 +284,7 @@ signals:
     void configurationBackupsChanged();
     void customConfigLoadDone();
     void qmlLoadDone();
+    void fwArchiveDlProgress(QString msg, double prog);
 
 public slots:
 
@@ -451,6 +462,7 @@ private:
     bool mAllowScreenRotation;
     bool mSpeedGaugeUseNegativeValues;
     bool mAskQmlLoad;
+    bool mIgnoreCustomConfigs;
 
     void updateFwRx(bool fwRx);
     void setLastConnectionType(conn_t type);

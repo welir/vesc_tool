@@ -79,6 +79,7 @@ private:
     QString mVescLastPath;
     qint32 mGnssMsTodayLast;
     QString mLastSaveCsvPath;
+    QString mLastSaveAsPath;
 
     QVector<LOG_HEADER> mLogHeader;
     QVector<QVector<double> > mLog;
@@ -89,6 +90,7 @@ private:
     QVector<double> mLogRtSamplesNow;
     QTimer *mLogRtTimer;
     bool mLogRtAppendTime;
+    bool mLogRtFieldUpdatePending;
 
     // Lightweight pre-calculated offsets in the log. These
     // need to be looked up a lot and finding them in the
@@ -110,6 +112,13 @@ private:
     int mInd_pitch;
     int mInd_yaw;
     int mInd_fault;
+
+    struct SelectoData {
+        QStringList dataLabels;
+        int scrollPos;
+    };
+
+    SelectoData mSelection;
 
     void resetInds() {
         mInd_t_day = -1;
@@ -167,6 +176,10 @@ private:
                      double scaleStep = 0.1, double scaleMax = 99.99);
     void openLog(QByteArray data);
     void generateMissingEntries();
+
+    void storeSelection();
+    void restoreSelection();
+    void setFileButtonsEnabled(bool en);
 
 };
 

@@ -35,23 +35,22 @@ PageLogAnalysis::PageLogAnalysis(QWidget *parent) :
 
     resetInds();
 
-    QString theme = Utility::getThemePath();
-    ui->centerButton->setIcon(QPixmap(theme + "icons/icons8-target-96.png"));
-    ui->playButton->setIcon(QPixmap(theme + "icons/Circled Play-96.png"));
-    ui->logListRefreshButton->setIcon(QPixmap(theme + "icons/Refresh-96.png"));
-    ui->logListOpenButton->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->openCurrentButton->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->openCsvButton->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->savePlotPdfButton->setIcon(QPixmap(theme + "icons/Line Chart-96.png"));
-    ui->savePlotPngButton->setIcon(QPixmap(theme + "icons/Line Chart-96.png"));
-    ui->saveMapPdfButton->setIcon(QPixmap(theme + "icons/Waypoint Map-96.png"));
-    ui->saveMapPngButton->setIcon(QPixmap(theme + "icons/Waypoint Map-96.png"));
-    ui->vescLogListRefreshButton->setIcon(QPixmap(theme + "icons/Refresh-96.png"));
-    ui->vescLogListOpenButton->setIcon(QPixmap(theme + "icons/Open Folder-96.png"));
-    ui->vescUpButton->setIcon(QPixmap(theme + "icons/Upload-96.png"));
-    ui->vescSaveAsButton->setIcon(QPixmap(theme + "icons/Save as-96.png"));
-    ui->vescLogDeleteButton->setIcon(QPixmap(theme + "icons/Delete-96.png"));
-    ui->saveCsvButton->setIcon(QPixmap(theme + "icons/Line Chart-96.png"));
+    ui->centerButton->setIcon(Utility::getIcon("icons/icons8-target-96.png"));
+    ui->playButton->setIcon(Utility::getIcon("icons/Circled Play-96.png"));
+    ui->logListRefreshButton->setIcon(Utility::getIcon("icons/Refresh-96.png"));
+    ui->logListOpenButton->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->openCurrentButton->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->openCsvButton->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->savePlotPdfButton->setIcon(Utility::getIcon("icons/Line Chart-96.png"));
+    ui->savePlotPngButton->setIcon(Utility::getIcon("icons/Line Chart-96.png"));
+    ui->saveMapPdfButton->setIcon(Utility::getIcon("icons/Waypoint Map-96.png"));
+    ui->saveMapPngButton->setIcon(Utility::getIcon("icons/Waypoint Map-96.png"));
+    ui->vescLogListRefreshButton->setIcon(Utility::getIcon("icons/Refresh-96.png"));
+    ui->vescLogListOpenButton->setIcon(Utility::getIcon("icons/Open Folder-96.png"));
+    ui->vescUpButton->setIcon(Utility::getIcon("icons/Upload-96.png"));
+    ui->vescSaveAsButton->setIcon(Utility::getIcon("icons/Save as-96.png"));
+    ui->vescLogDeleteButton->setIcon(Utility::getIcon("icons/Delete-96.png"));
+    ui->saveCsvButton->setIcon(Utility::getIcon("icons/Line Chart-96.png"));
 
     updateTileServers();
 
@@ -122,6 +121,7 @@ PageLogAnalysis::PageLogAnalysis(QWidget *parent) :
     mGnssTimer->start(100);
     mGnssMsTodayLast = 0;
 
+    mLogRtFieldUpdatePending = false;
     mLogRtAppendTime = false;
     mLogRtTimer = new QTimer(this);
 
@@ -238,12 +238,14 @@ PageLogAnalysis::PageLogAnalysis(QWidget *parent) :
 
     QSettings set;
     mLastSaveCsvPath = set.value("pageloganalysis/lastSaveCsvPath", true).toString();
+    mLastSaveAsPath = set.value("pageloganalysis/lastSaveAsPath", true).toString();
 }
 
 PageLogAnalysis::~PageLogAnalysis()
 {
     QSettings set;
     set.setValue("pageloganalysis/lastSaveCsvPath", mLastSaveCsvPath);
+    set.setValue("pageloganalysis/lastSaveAsPath", mLastSaveAsPath);
     set.sync();
 
     delete ui;
@@ -260,6 +262,12 @@ void PageLogAnalysis::setVesc(VescInterface *vesc)
 
     if (mVesc) {
         auto updatePlots = [this]() {
+            if (mLogRtFieldUpdatePending) {
+                return;
+            }
+
+            storeSelection();
+
             resetInds();
 
             mLogHeader = mLogRtHeader;
@@ -268,20 +276,17 @@ void PageLogAnalysis::setVesc(VescInterface *vesc)
             updateInds();
             generateMissingEntries();
 
-            auto sel = ui->dataTable->selectionModel()->selectedIndexes();
             ui->dataTable->setRowCount(0);
 
             if (mLog.size() == 0) {
                 return;
             }
 
-            for (auto e: mLogHeader) {
+            foreach (auto e, mLogHeader) {
                 addDataItem(e.name, !e.isTimeStamp, e.scaleStep, e.scaleMax);
             }
 
-            foreach (QModelIndex ind, sel) {
-                ui->dataTable->selectRow(ind.row());
-            }
+            restoreSelection();
 
             truncateDataAndPlot(ui->autoZoomBox->isChecked());
 
@@ -316,6 +321,7 @@ void PageLogAnalysis::setVesc(VescInterface *vesc)
                 mLogRtHeader[0] = h;
             }
 
+            mLogRtFieldUpdatePending = false;
             mLogRtSamplesNow.resize(fieldNum);
             mLogRtTimer->start(1000.0 / rateHz);
             mLogRt.clear();
@@ -327,9 +333,7 @@ void PageLogAnalysis::setVesc(VescInterface *vesc)
         });
 
         connect(mVesc->commands(), &Commands::logConfigField, [this](int fieldInd, LOG_HEADER h) {
-            if (mLogRtAppendTime) {
-                fieldInd++;
-            }
+            mLogRtFieldUpdatePending = true;
 
             if (mLogRtHeader.size() <= fieldInd) {
                 mLogRtHeader.resize(fieldInd + 1);
@@ -420,6 +424,8 @@ void PageLogAnalysis::setVesc(VescInterface *vesc)
 
 void PageLogAnalysis::loadVescLog(QVector<LOG_DATA> log)
 {
+    storeSelection();
+
     resetInds();
 
     mLog.clear();
@@ -594,9 +600,11 @@ void PageLogAnalysis::loadVescLog(QVector<LOG_DATA> log)
         return;
     }
 
-    for (auto e: mLogHeader) {
+    foreach (auto e, mLogHeader) {
         addDataItem(e.name, !e.isTimeStamp, e.scaleStep, e.scaleMax);
     }
+
+    restoreSelection();
 
     truncateDataAndPlot();
 }
@@ -604,13 +612,13 @@ void PageLogAnalysis::loadVescLog(QVector<LOG_DATA> log)
 void PageLogAnalysis::on_openCsvButton_clicked()
 {
     if (mVesc) {
+        QString dirPath = QSettings().value("pageloganalysis/lastdir", "").toString();
         QString fileName = QFileDialog::getOpenFileName(this,
-                                                        tr("Load CSV File"), "",
+                                                        tr("Load CSV File"), dirPath,
                                                         tr("CSV files (*.csv)"));
 
         if (!fileName.isEmpty()) {
-            QSettings set;
-            set.setValue("pageloganalysis/lastdir",
+            QSettings().setValue("pageloganalysis/lastdir",
                          QFileInfo(fileName).absolutePath());
 
             QFile inFile(fileName);
@@ -737,7 +745,7 @@ void PageLogAnalysis::updateGraphs()
     LocPoint p, p2;
 
     double time = 0;
-    for (const auto &d: mLogTruncated) {
+    foreach (const auto &d, mLogTruncated) {
         if (mInd_t_day >= 0) {
             if (startTime < 0) {
                 startTime = d[mInd_t_day];
@@ -1030,7 +1038,7 @@ QVector<double> PageLogAnalysis::getLogSample(double time)
         d = mLogTruncated.first();
 
         if (mInd_t_day >= 0) {
-            int startTime = d[mInd_t_day];
+            double startTime = d[mInd_t_day];
 
             for (auto dn: mLogTruncated) {
                 double timeNow = dn[mInd_t_day] - startTime;
@@ -1114,6 +1122,8 @@ void PageLogAnalysis::addDataItem(QString name, bool hasScale, double scaleStep,
 
 void PageLogAnalysis::openLog(QByteArray data)
 {
+    storeSelection();
+
     QTextStream in(&data);
     auto tokensLine1 = in.readLine().split(";");
     if (tokensLine1.size() < 1) {
@@ -1156,6 +1166,9 @@ void PageLogAnalysis::openLog(QByteArray data)
             QStringList tokens = in.readLine().split(";");
             QVector<double> entry;
             for (int i = 0;i < tokens.size();i++) {
+                if (i >= entryLastData.size()) {
+                   break;
+                }
                 if (!tokens.at(i).isEmpty()) {
                     entryLastData[i] = tokens.at(i).toDouble();
                 }
@@ -1177,9 +1190,11 @@ void PageLogAnalysis::openLog(QByteArray data)
             return;
         }
 
-        for (auto e: mLogHeader) {
+        foreach (auto e, mLogHeader) {
             addDataItem(e.name, !e.isTimeStamp, e.scaleStep, e.scaleMax);
         }
+
+        restoreSelection();
 
         truncateDataAndPlot();
     }
@@ -1288,6 +1303,46 @@ void PageLogAnalysis::generateMissingEntries()
     updateInds();
 }
 
+void PageLogAnalysis::storeSelection()
+{
+    mSelection.dataLabels.clear();
+    foreach (auto i, ui->dataTable->selectionModel()->selectedRows()) {
+        mSelection.dataLabels.append(ui->dataTable->item(i.row(), 0)->text());
+    }
+    mSelection.scrollPos = ui->dataTable->verticalScrollBar()->value();
+}
+
+void PageLogAnalysis::restoreSelection()
+{
+    ui->dataTable->clearSelection();
+    auto modeOld = ui->dataTable->selectionMode();
+    ui->dataTable->setSelectionMode(QAbstractItemView::MultiSelection);
+    for (int row = 0;row < ui->dataTable->rowCount();row++) {
+        bool selected = false;
+        foreach (auto i, mSelection.dataLabels) {
+            if (ui->dataTable->item(row, 0)->text() == i) {
+                selected = true;
+                break;
+            }
+        }
+
+        if (selected) {
+            ui->dataTable->selectRow(row);
+        }
+    }
+    ui->dataTable->setSelectionMode(modeOld);
+    ui->dataTable->verticalScrollBar()->setValue(mSelection.scrollPos);
+}
+
+void PageLogAnalysis::setFileButtonsEnabled(bool en)
+{
+    ui->vescLogListOpenButton->setEnabled(en);
+    ui->vescSaveAsButton->setEnabled(en);
+    ui->vescLogListRefreshButton->setEnabled(en);
+    ui->vescLogDeleteButton->setEnabled(en);
+    ui->vescUpButton->setEnabled(en);
+}
+
 void PageLogAnalysis::on_saveMapPdfButton_clicked()
 {
     QString fileName = QFileDialog::getSaveFileName(this,
@@ -1389,10 +1444,9 @@ void PageLogAnalysis::on_vescLogListRefreshButton_clicked()
             continue;
         }
 
-        QString theme = Utility::getThemePath();
         QTableWidgetItem *itName = new QTableWidgetItem(fe.name);
         itName->setData(Qt::UserRole, QVariant::fromValue(fe));
-        itName->setIcon(fe.isDir ? QPixmap(theme + "icons/Open Folder-96.png") : QPixmap(theme + "icons/Line Chart-96.png"));
+        itName->setIcon(fe.isDir ? Utility::getIcon("icons/Open Folder-96.png") : Utility::getIcon("icons/Line Chart-96.png"));
         ui->vescLogTable->setRowCount(ui->vescLogTable->rowCount() + 1);
         ui->vescLogTable->setItem(ui->vescLogTable->rowCount() - 1, 0, itName);
 
@@ -1408,6 +1462,8 @@ void PageLogAnalysis::on_vescLogListRefreshButton_clicked()
         }
     }
 }
+
+
 
 void PageLogAnalysis::on_vescLogListOpenButton_clicked()
 {
@@ -1434,11 +1490,9 @@ void PageLogAnalysis::on_vescLogListOpenButton_clicked()
             mVescLastPath.replace("//", "/");
             on_vescLogListRefreshButton_clicked();
         } else {
-            ui->vescLogListOpenButton->setEnabled(false);
-            ui->vescSaveAsButton->setEnabled(false);
+            setFileButtonsEnabled(false);
             auto data = mVesc->commands()->fileBlockRead(mVescLastPath + "/" + fe.name);
-            ui->vescLogListOpenButton->setEnabled(true);
-            ui->vescSaveAsButton->setEnabled(true);
+            setFileButtonsEnabled(true);
             if (!data.isEmpty()) {
                 openLog(data);
             }
@@ -1486,32 +1540,75 @@ void PageLogAnalysis::on_vescSaveAsButton_clicked()
     }
 
     if (fe.isDir) {
-        mVesc->emitMessageDialog("Save File", "Cannot save directory, only files", false);
+        mVesc->emitMessageDialog("Save File", "Cannot save directory, only files. Multiple "
+                                              "files can be selected too.", false);
     } else {
-        QString fileName = QFileDialog::getSaveFileName(this,
-                                                        tr("Save Log File"), "",
-                                                        tr("CSV files (*.csv)"));
-
-        if (!fileName.isEmpty()) {
-            if (!fileName.toLower().endsWith(".csv")) {
-                fileName += ".csv";
+        if (items.size() == 2) {
+            QString path = "";
+            if (!mLastSaveAsPath.isEmpty()) {
+                path = mLastSaveAsPath + "/" + fe.name;
             }
 
-            QFile file(fileName);
+            QString fileName = QFileDialog::getSaveFileName(this,
+                                                            tr("Save Log File"),
+                                                            path,
+                                                            tr("CSV files (*.csv)"));
 
-            if (!file.open(QIODevice::WriteOnly)) {
-                mVesc->emitMessageDialog("Save File", "Cannot open destination", false);
-                return;
+            if (!fileName.isEmpty()) {
+                if (!fileName.endsWith(".csv", Qt::CaseInsensitive)) {
+                    fileName += ".csv";
+                }
+
+                QFileInfo fi(fileName);
+                mLastSaveAsPath = fi.canonicalPath();
+
+                QFile file(fileName);
+
+                if (!file.open(QIODevice::WriteOnly)) {
+                    mVesc->emitMessageDialog("Save File", "Cannot open destination", false);
+                    return;
+                }
+
+                setFileButtonsEnabled(false);
+                auto data = mVesc->commands()->fileBlockRead(mVescLastPath + "/" + fe.name);
+                setFileButtonsEnabled(true);
+
+                file.write(data);
+                file.close();
             }
+        } else {
+            QString path = QFileDialog::getExistingDirectory(this,
+                                                             tr("Choose Destination"),
+                                                             mLastSaveAsPath,
+                                                             QFileDialog::ShowDirsOnly |
+                                                             QFileDialog::DontResolveSymlinks);
+            if (!path.isEmpty()) {
+                setFileButtonsEnabled(false);
 
-            ui->vescLogListOpenButton->setEnabled(false);
-            ui->vescSaveAsButton->setEnabled(false);
-            auto data = mVesc->commands()->fileBlockRead(mVescLastPath + "/" + fe.name);
-            ui->vescLogListOpenButton->setEnabled(true);
-            ui->vescSaveAsButton->setEnabled(true);
+                mLastSaveAsPath = path;
 
-            file.write(data);
-            file.close();
+                bool didCancel = false;
+                foreach (auto it, items) {
+                    if (didCancel) {
+                        break;
+                    }
+
+                    if (it->data(Qt::UserRole).canConvert<FILE_LIST_ENTRY>()) {
+                        fe = it->data(Qt::UserRole).value<FILE_LIST_ENTRY>();
+                        if (!fe.isDir) {
+                            QFile file(path + "/" + fe.name);
+                            if (file.open(QIODevice::WriteOnly)) {
+                                auto data = mVesc->commands()->fileBlockRead(mVescLastPath + "/" + fe.name);
+                                didCancel = mVesc->commands()->fileBlockDidCancel();
+                                file.write(data);
+                                file.close();
+                            }
+                        }
+                    }
+                }
+
+                setFileButtonsEnabled(true);
+            }
         }
     }
 }
@@ -1525,31 +1622,48 @@ void PageLogAnalysis::on_vescLogDeleteButton_clicked()
         return;
     }
 
-    FILE_LIST_ENTRY fe;
-    if (items.first()->data(Qt::UserRole).canConvert<FILE_LIST_ENTRY>()) {
-        fe = items.first()->data(Qt::UserRole).value<FILE_LIST_ENTRY>();
-    }
-
     int ret = QMessageBox::Cancel;
-    if (fe.isDir) {
-        ret = QMessageBox::warning(this,
-                                   tr("Delete Directory"),
-                                   tr("This is going to delete %1 and its content permanently. Are you sure?").arg(fe.name),
-                                   QMessageBox::Yes | QMessageBox::Cancel);
+    if (items.size() == 2) {
+        FILE_LIST_ENTRY fe;
+        if (items.first()->data(Qt::UserRole).canConvert<FILE_LIST_ENTRY>()) {
+            fe = items.first()->data(Qt::UserRole).value<FILE_LIST_ENTRY>();
+        }
+
+        if (fe.isDir) {
+            ret = QMessageBox::warning(this,
+                                       tr("Delete Directory"),
+                                       tr("This is going to delete %1 and its content permanently. Are you sure?").arg(fe.name),
+                                       QMessageBox::Yes | QMessageBox::Cancel);
+        } else {
+            ret = QMessageBox::warning(this,
+                                       tr("Delete File"),
+                                       tr("This is going to delete %1 permanently. Are you sure?").arg(fe.name),
+                                       QMessageBox::Yes | QMessageBox::Cancel);
+        }
     } else {
         ret = QMessageBox::warning(this,
-                                   tr("Delete File"),
-                                   tr("This is going to delete %1 permanently. Are you sure?").arg(fe.name),
+                                   tr("Delete"),
+                                   tr("This is going to delete the selected files and directories. Are you sure?"),
                                    QMessageBox::Yes | QMessageBox::Cancel);
     }
 
     if (ret == QMessageBox::Yes) {
         ui->vescLogTab->setEnabled(false);
-        bool ok = mVesc->commands()->fileBlockRemove(mVescLastPath + "/" + fe.name);
+        int cnt = 0;
+        foreach (auto it, items) {
+            if (it->data(Qt::UserRole).canConvert<FILE_LIST_ENTRY>()) {
+                auto fe = it->data(Qt::UserRole).value<FILE_LIST_ENTRY>();
+                bool ok = mVesc->commands()->fileBlockRemove(mVescLastPath + "/" + fe.name);
+                if (ok) {
+                    cnt++;
+                    mVesc->emitStatusMessage("File deleted", true);
+                }
+            }
+        }
         ui->vescLogTab->setEnabled(true);
-        if (ok) {
+
+        if (cnt > 0) {
             on_vescLogListRefreshButton_clicked();
-            mVesc->emitStatusMessage("File deleted", true);
         }
     }
 }
